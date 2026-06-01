@@ -5,14 +5,14 @@ import (
 )
 
 type KeyCell struct {
-	ChildPageID uint32
 	Key         []byte
+	ChildPageID uint32
 }
 
 type KVCell struct {
-	Flag  uint8
 	Key   []byte
 	Value []byte
+	Flag  uint8
 }
 
 // KeyCell Layout: [ChildPageID (4b)][KeyLen (2b)][Key...]
