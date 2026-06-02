@@ -34,7 +34,7 @@ func ReadPage(file *os.File, pageID uint32, p *Page) error {
 	return nil
 }
 
-// AllocatePage 
+// AllocatePage allocates a new page for the given file.
 func AllocatePage(file *os.File, mode uint8) (uint32, error) {
     info, err := file.Stat()
     if err != nil {
