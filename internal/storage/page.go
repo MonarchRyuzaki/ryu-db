@@ -27,6 +27,10 @@ Slotted Page Memory Layout:
 +----------------+------------------------------------------+
 */
 
+// Note: Slot directory is currently unsorted (insertion order). 
+// A sorted index array can be maintained separately for binary 
+// search within a page without changing slot IDs. Deferred.
+
 const (
 	PageSize   = 4096
 	HeaderSize = 32

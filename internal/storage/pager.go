@@ -33,3 +33,14 @@ func ReadPage(file *os.File, pageID uint32, p *Page) error {
 
 	return nil
 }
+
+// AllocatePage 
+func AllocatePage(file *os.File, mode uint8) (uint32, error) {
+    info, err := file.Stat()
+    if err != nil {
+        return 0, err
+    }
+    newPageID := uint32(info.Size() / PageSize)
+    p := NewPage(mode)
+    return newPageID, WritePage(file, newPageID, p)
+}
