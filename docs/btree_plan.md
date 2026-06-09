@@ -68,11 +68,11 @@ We will maintain a `Stack` (a simple slice of `uint32` PageIDs) during traversal
   6. **Recursive Split:** If the parent is *also* full, repeat this process upwards. 
   7. **Root Split:** If the stack is empty (we split the root), allocate a *new* root page, make it point to the two halves, and update `btree.rootPageID`.
 
-### Step 4: Delete & Merging (Advanced)
-* **Goal:** Remove keys and handle underflow.
+### Step 4: Deletion (The Tombstone Approach)
+* **Goal:** Safely remove keys without the immense complexity of underflow merging.
+* **Context:** True B-Tree node merging is notoriously difficult and error-prone. Since Splitting and Upserting already introduced enough complexity, we opted for an "Tombstone" approach for deletion.
 * **Logic:**
-  1. Traverse to the leaf and delete the cell.
-  2. Check for **Underflow** (Is the page less than half full?).
-  3. If underflow, fetch left/right siblings.
-  4. **Borrow:** If a sibling is comfortably full, steal one cell to satisfy the threshold and update the parent's boundary key.
-  5. **Merge:** If siblings are also nearly empty, combine the two pages into one, and delete the boundary key from the parent (which might trigger a recursive merge upwards).
+  1. We introduced a `Flag` byte in the `KVCell`. `KEY_DELETED_FLAG` (`2`) means deleted (Tombstoned).
+  2. When a user calls `Delete(key)`, we simply perform an `Upsert` that swaps the existing cell out for a new one with the deleted flag set.
+  3. When `Find(key)` locates a key, it checks the flag. If it's deleted, it pretends the key doesn't exist and returns an error.
+  4. **Future Cleanup:** By pushing the deletion complexity to a background "Vacuum" or "Garbage Collection" process later, we significantly simplify the core storage engine. The Vacuum process can occasionally scan pages, physically remove tombstoned cells, and reclaim free space asynchronously.

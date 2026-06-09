@@ -15,6 +15,8 @@ type KVCell struct {
 	Flag  uint8
 }
 
+const KEY_DELETED_FLAG uint8 = 1 << 1
+
 // KeyCell Layout: [ChildPageID (4b)][KeyLen (2b)][Key...]
 func (k *KeyCell) Size() int {
 	return 4 + 2 + len(k.Key)
@@ -79,4 +81,12 @@ func NewKVCell(flag uint8, key []byte, value []byte) *KVCell {
 		Key:   key,
 		Value: value,
 	}
+}
+
+func (k *KVCell) IsDeleted() bool {
+	return (k.Flag & KEY_DELETED_FLAG) != 0
+}
+
+func (k *KVCell) SetDeleted() {
+	k.Flag |= KEY_DELETED_FLAG
 }

@@ -66,5 +66,6 @@ func (x *Pager) AllocatePage(mode uint8) (uint32, error) {
     }
     newPageID := uint32(info.Size() / PageSize)
     p := NewPage(mode)
+    p.SetPageID(newPageID)
     return newPageID, x.WritePage(newPageID, p)
 }

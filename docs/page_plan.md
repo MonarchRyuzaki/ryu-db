@@ -72,7 +72,7 @@ This document outlines the phased implementation plan for the database storage e
 ### Order of Operations Shift
 The steps below are skipped for now to prioritize understanding what pages look like in practice. The revised order of development will be:
 1. **Buffer Manager** ✅
-2. **B+ Tree Implementation**
+2. **B+ Tree Implementation** ✅
 3. **Updation and Deletion (Page internals)**
 
 ---
