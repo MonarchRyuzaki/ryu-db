@@ -61,14 +61,98 @@ func NewBTree(tableName string, dir string) (*BTree, error) {
 	}
 
 	if info.Size() == 0 {
+		// Allocate Page 0 (Meta Page)
+		metaID, err := bm.pager.AllocatePage(PageTypeMeta)
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate meta page: %w", err)
+		}
+		
+		// Allocate Page 1 (Root Leaf Page)
 		rootID, err := bm.pager.AllocatePage(PageTypeLeaf)
 		if err != nil {
 			return nil, fmt.Errorf("failed to allocate root page: %w", err)
 		}
+
+		// Setup Meta Page
+		metaPage, err := bm.FetchPageForWrite(metaID, PageTypeMeta)
+		if err != nil {
+			return nil, err
+		}
+		metaPage.SetRootPageID(rootID)
+		metaPage.SetFirstFreePageID(0)
+		bm.UnpinPage(metaID, true, true)
+
 		tree.rootPageID = rootID
+	} else {
+		// Read Root Page ID from Meta Page (Page 0)
+		metaPage, err := bm.FetchPageForRead(MetaPageID, PageTypeMeta)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read meta page: %w", err)
+		}
+		tree.rootPageID = metaPage.GetRootPageID()
+		bm.UnpinPage(MetaPageID, false, false)
 	}
 
 	return tree, nil
+}
+
+// allocatePage checks the Free Page List on the Meta Page. If a free page is available,
+// it pops it and reuses it. Otherwise, it calls pager.AllocatePage to append to the file.
+func (tree *BTree) allocatePage(pageType uint8) (uint32, error) {
+	metaPage, err := tree.bm.FetchPageForWrite(MetaPageID, PageTypeMeta)
+	if err != nil {
+		return 0, err
+	}
+	defer tree.bm.UnpinPage(MetaPageID, true, true)
+
+	firstFree := metaPage.GetFirstFreePageID()
+	if firstFree != 0 {
+		// Pop the free page
+		freePage, err := tree.bm.FetchPageForRead(firstFree, PageTypeFree)
+		if err != nil {
+			return 0, err
+		}
+		nextFree := freePage.GetNextFreePageID()
+		tree.bm.UnpinPage(firstFree, false, false)
+
+		metaPage.SetFirstFreePageID(nextFree)
+
+		// Re-initialize the reused page to its new type
+		reusedPage, err := tree.bm.FetchPageForWrite(firstFree, pageType)
+		if err != nil {
+			return 0, err
+		}
+		reusedPage.Init(pageType)
+		tree.bm.UnpinPage(firstFree, true, true)
+
+		return firstFree, nil
+	}
+
+	// No free pages, append to file
+	return tree.bm.pager.AllocatePage(pageType)
+}
+
+// deallocatePage marks a page as Free and pushes it onto the Free Page List stack.
+func (tree *BTree) deallocatePage(pageID uint32) error {
+	metaPage, err := tree.bm.FetchPageForWrite(MetaPageID, PageTypeMeta)
+	if err != nil {
+		return err
+	}
+	defer tree.bm.UnpinPage(MetaPageID, true, true)
+
+	firstFree := metaPage.GetFirstFreePageID()
+
+	// Initialize the dead page as a Free Page and link it
+	deadPage, err := tree.bm.FetchPageForWrite(pageID, PageTypeFree)
+	if err != nil {
+		return err
+	}
+	deadPage.Init(PageTypeFree)
+	deadPage.SetNextFreePageID(firstFree)
+	tree.bm.UnpinPage(pageID, true, true)
+
+	metaPage.SetFirstFreePageID(pageID)
+	return nil
 }
 
 // findLeafPage traverses the tree to find the appropriate leaf page for a key.
@@ -206,6 +290,11 @@ func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8) error {
 		if bytes.Equal(kv.Key, key) {
 			keyExists = true
 			cellToKeep = cellBytes // Swap! (Updates or Tombstones the cell)
+			
+			// If we are overwriting a cell that had an overflow chain, we must free the old chain!
+			if kv.IsOverflow() {
+				tree.freeOverflowChain(kv.Value)
+			}
 		} else {
 			cellToKeep = make([]byte, len(c))
 			copy(cellToKeep, c)
@@ -255,7 +344,7 @@ func (tree *BTree) splitLeafCells(leaf *Page, path []uint32, cells [][]byte) err
 	leaf.Init(PageTypeLeaf)
 
 	// 3. Allocate and fetch a new leaf page
-	newLeafID, err := tree.bm.pager.AllocatePage(PageTypeLeaf)
+	newLeafID, err := tree.allocatePage(PageTypeLeaf)
 	if err != nil {
 		return err
 	}
@@ -289,7 +378,7 @@ func (tree *BTree) splitLeafCells(leaf *Page, path []uint32, cells [][]byte) err
 func (tree *BTree) insertIntoParent(leftChildID uint32, routingCell []byte, path []uint32) error {
 	if len(path) == 0 {
 		// We split the root! Create a brand new root internal node.
-		newRootID, _ := tree.bm.pager.AllocatePage(PageTypeInternal)
+		newRootID, _ := tree.allocatePage(PageTypeInternal)
 		newRoot, _ := tree.bm.FetchPageForWrite(newRootID, PageTypeInternal)
 
 		// The new root needs a left-most child pointer (empty key, representing -infinity)
@@ -352,7 +441,7 @@ func (tree *BTree) splitInternal(internalNode *Page, path []uint32, newCell []by
 
 	internalNode.Init(PageTypeInternal)
 
-	newInternalID, _ := tree.bm.pager.AllocatePage(PageTypeInternal)
+	newInternalID, _ := tree.allocatePage(PageTypeInternal)
 	newInternal, _ := tree.bm.FetchPageForWrite(newInternalID, PageTypeInternal)
 
 	mid := len(cells) / 2
@@ -392,7 +481,7 @@ func (tree *BTree) createOverflowChain(value []byte) ([]byte, error) {
 	dataRemaining := value
 
 	for len(dataRemaining) > 0 {
-		newPageID, err := tree.bm.pager.AllocatePage(PageTypeOverflow)
+		newPageID, err := tree.allocatePage(PageTypeOverflow)
 		if err != nil {
 			return nil, err
 		}

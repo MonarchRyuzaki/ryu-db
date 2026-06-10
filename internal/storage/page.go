@@ -55,10 +55,14 @@ const (
 )
 
 const (
+	PageTypeMeta     uint8 = 0
 	PageTypeLeaf     uint8 = 1
 	PageTypeInternal uint8 = 2
 	PageTypeOverflow uint8 = 3
+	PageTypeFree     uint8 = 4
 )
+
+const MetaPageID uint32 = 0
 
 type Page struct {
 	data []byte // Raw 4096 byte slice
@@ -216,4 +220,35 @@ func (p *Page) ReadOverflowData(length uint32) []byte {
 		length = MaxOverflowDataSize
 	}
 	return p.data[overflowDataOffset : overflowDataOffset+length]
+}
+
+// --- Meta Page Operations ---
+const metaRootPageOffset = HeaderSize // 32
+const metaFirstFreePageOffset = 36
+
+func (p *Page) GetRootPageID() uint32 {
+	return binary.LittleEndian.Uint32(p.data[metaRootPageOffset : metaRootPageOffset+4])
+}
+
+func (p *Page) SetRootPageID(id uint32) {
+	binary.LittleEndian.PutUint32(p.data[metaRootPageOffset:metaRootPageOffset+4], id)
+}
+
+func (p *Page) GetFirstFreePageID() uint32 {
+	return binary.LittleEndian.Uint32(p.data[metaFirstFreePageOffset : metaFirstFreePageOffset+4])
+}
+
+func (p *Page) SetFirstFreePageID(id uint32) {
+	binary.LittleEndian.PutUint32(p.data[metaFirstFreePageOffset:metaFirstFreePageOffset+4], id)
+}
+
+// --- Free Page Operations ---
+const freeNextPageOffset = HeaderSize // 32
+
+func (p *Page) GetNextFreePageID() uint32 {
+	return binary.LittleEndian.Uint32(p.data[freeNextPageOffset : freeNextPageOffset+4])
+}
+
+func (p *Page) SetNextFreePageID(id uint32) {
+	binary.LittleEndian.PutUint32(p.data[freeNextPageOffset:freeNextPageOffset+4], id)
 }

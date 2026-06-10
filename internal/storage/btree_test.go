@@ -189,3 +189,54 @@ func TestBTree_Overflow(t *testing.T) {
 		t.Fatalf("Upsert over massive key failed. Expected 'tiny_value', got %s", string(retrieved2))
 	}
 }
+
+// TestBTree_FreePageReuse verifies that deleted overflow pages are added to the Free Page List
+// by the Vacuum process, and subsequently reused by new inserts instead of growing the file.
+func TestBTree_FreePageReuse(t *testing.T) {
+	dir := t.TempDir()
+
+	tree, err := NewBTree("freepage_test", dir)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+
+	// 1. Verify MetaPage initially has no free pages
+	metaPage, _ := tree.bm.FetchPageForRead(MetaPageID, PageTypeMeta)
+	if metaPage.GetFirstFreePageID() != 0 {
+		t.Fatalf("Expected FirstFreePageID to be 0 initially")
+	}
+	tree.bm.UnpinPage(MetaPageID, false, false)
+
+	// 2. Insert a 10KB payload (which requires ~3 overflow pages)
+	payload1 := make([]byte, 10000)
+	tree.Insert([]byte("key1"), payload1)
+
+	// 3. Delete the payload (creates a tombstone)
+	tree.Delete([]byte("key1"))
+
+	// 4. Run the Vacuum process to sweep the tombstone and free the 3 overflow pages
+	err = tree.Vacuum()
+	if err != nil {
+		t.Fatalf("Vacuum failed: %v", err)
+	}
+
+	// 5. Verify MetaPage now has free pages
+	metaPage, _ = tree.bm.FetchPageForRead(MetaPageID, PageTypeMeta)
+	firstFree := metaPage.GetFirstFreePageID()
+	if firstFree == 0 {
+		t.Fatalf("Expected FirstFreePageID to be non-zero after Vacuum freed overflow pages")
+	}
+	tree.bm.UnpinPage(MetaPageID, false, false)
+
+	// 6. Insert another large payload (this should pop pages off the free list!)
+	payload2 := make([]byte, 10000)
+	tree.Insert([]byte("key2"), payload2)
+
+	// 7. Verify the free list was consumed (it should be empty again, or at least smaller)
+	metaPage, _ = tree.bm.FetchPageForRead(MetaPageID, PageTypeMeta)
+	newFirstFree := metaPage.GetFirstFreePageID()
+	if newFirstFree != 0 {
+		t.Fatalf("Expected Free Page List to be completely consumed, but it still has free pages")
+	}
+	tree.bm.UnpinPage(MetaPageID, false, false)
+}

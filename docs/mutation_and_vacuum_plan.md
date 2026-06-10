@@ -53,3 +53,23 @@ The parent **still** has the routing key `50`. This is perfectly mathematically 
 **The Trade-off:**
 If we forced the Vacuum process to remove empty leaf nodes and update parent routing keys, we would have to implement complex recursive B-Tree node merging (underflow handling) which requires stalling the database with heavy locks. 
 By allowing these "ghost" routing keys to remain in the internal nodes indefinitely, we trade a microscopic amount of wasted disk space in exchange for incredibly fast, lock-free, and simple deletions. 
+
+---
+
+## 5. Implementation Notes
+
+The actual implementation of these concepts evolved with the following specific logic:
+
+### The Free Page List Stack
+Instead of building a separate data structure for free pages, we treat `PageTypeFree (4)` pages as a persistent linked list (a Stack) entirely embedded within the physical file.
+- **`deallocatePage(pageID)` (Push)**: When a page is freed, we format it as `PageTypeFree`. We write the current `MetaPage.FirstFreePageID` into its header as the "next" pointer. We then update the Meta-Page so `FirstFreePageID` points to this newly freed page. 
+- **`allocatePage(pageType)` (Pop)**: When a new page is requested, if `FirstFreePageID` is non-zero, we read that free page to find its "next" pointer. We update the Meta-Page to point to the next free page, re-format the popped page to the requested `pageType`, and return its ID. This guarantees O(1) space reclamation without expanding the file size on disk.
+
+### Immediate Overflow Reclamation
+During implementation, a memory leak risk was identified: if a user deletes a key that has an Overflow chain, the `Upsert` method creates a new Tombstone cell with a nil value. Because the Tombstone has no value, the Overflow flag is stripped. If we waited for the background `Vacuum()` to free the pages, it would have lost the pointer to the old overflow chain!
+
+**Solution:** The logic was adjusted so that `upsertCell` immediately calls `deallocatePage` on any old overflow chain that is being overwritten by an update or a tombstone. This keeps the tombstone cells completely tiny (0 bytes of value) while immediately reclaiming the huge overflow payload, rather than deferring it to the Vacuum process.
+
+### DFS Vacuum Traversal
+Because our B-Tree lacks right-sibling pointers at the leaf level, the `Vacuum()` background process cannot simply scan across the bottom of the tree. Instead, it performs a Depth-First Search (DFS) starting from the Root Page. 
+It uses **Latch Crabbing**: acquiring a Read Latch on internal nodes to collect their child pointers, dropping the lock, and recursing downward. When it hits a leaf node, it briefly drops the read lock and upgrades to an exclusive Write Latch, drops the dead tombstone cells, rewrites the page, and unlocks it. This allows the background cleanup to run concurrently without halting user queries.

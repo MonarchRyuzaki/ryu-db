@@ -77,9 +77,6 @@ func (tree *BTree) vacuumLeaf(pageID uint32) error {
 
 		if kv.IsDeleted() {
 			cleanedCount++
-			if kv.IsOverflow() {
-				tree.freeOverflowChain(kv.Value)
-			}
 		} else {
 			cCopy := make([]byte, len(c))
 			copy(cCopy, c)
@@ -110,9 +107,13 @@ func (tree *BTree) freeOverflowChain(metadata []byte) {
 		nextPageID := page.GetNextOverflowPageID()
 		tree.bm.UnpinPage(currPageID, false, false)
 
-		// TODO: Add `currPageID` to the Database Free Page List!
-		// For now, we print it to prove the vacuum is finding the orphan pages.
-		fmt.Printf("[Vacuum] Orphan Overflow Page %d found! Ready to be added to Free List.\n", currPageID)
+		// Add `currPageID` to the Database Free Page List!
+		err = tree.deallocatePage(currPageID)
+		if err != nil {
+			fmt.Printf("[Vacuum] Failed to free page %d: %v\n", currPageID, err)
+		} else {
+			fmt.Printf("[Vacuum] Orphan Overflow Page %d successfully added to Free List.\n", currPageID)
+		}
 
 		currPageID = nextPageID
 	}
