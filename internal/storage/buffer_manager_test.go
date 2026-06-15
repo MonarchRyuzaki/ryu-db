@@ -9,7 +9,7 @@ func TestBufferManager_EvictionAndPinning(t *testing.T) {
 	dir := t.TempDir()
 
 	// 1. Create a Buffer Manager with max 3 pages in memory
-	bm, err := NewBufferManager(dir, "test_bm.db", 3)
+	bm, err := NewBufferManager(dir, "test_bm.db", 3, nil)
 	if err != nil {
 		t.Fatalf("Failed to create Buffer Manager: %v", err)
 	}

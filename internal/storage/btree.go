@@ -33,6 +33,7 @@ type Index interface {
 // BTree implements the Index interface using a B+ Tree over the BufferManager.
 type BTree struct {
 	bm         *BufferManager
+	wal        *WAL
 	rootPageID uint32
 }
 
@@ -43,14 +44,21 @@ func NewBTree(tableName string, dir string) (*BTree, error) {
 		dir = "." 
 	}
 	filename := tableName + ".db"
+	walPath := filepath.Join(dir, tableName+".wal")
 
-	bm, err := NewBufferManager(dir, filename, 100)
+	wal, err := NewWAL(walPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize wal: %w", err)
+	}
+
+	bm, err := NewBufferManager(dir, filename, 100, wal)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize buffer manager: %w", err)
 	}
 
 	tree := &BTree{
 		bm:         bm,
+		wal:        wal,
 		rootPageID: 0, 
 	}
 
@@ -324,6 +332,20 @@ func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8) error {
 		for _, c := range cells {
 			leaf.Insert(c) // Re-insert all cells
 		}
+
+		if tree.wal != nil {
+			op := LogOpInsert
+			if flag == KEY_DELETED_FLAG {
+				op = LogOpDelete
+			}
+			lsn, err := tree.wal.Append(0, leaf.GetPageID(), op, key, value)
+			if err != nil {
+				tree.bm.UnpinPage(leaf.GetPageID(), true, true)
+				return err
+			}
+			leaf.SetLSN(lsn)
+		}
+
 		return tree.bm.UnpinPage(leaf.GetPageID(), true, true)
 	}
 

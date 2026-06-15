@@ -23,6 +23,8 @@ type BufferManager struct {
 	// When len(pageTable) == maxSize, we must evict an unpinned frame.
 	maxSize int
 
+	wal *WAL // Write-Ahead Log reference
+
 	mu sync.Mutex
 }
 
@@ -31,7 +33,7 @@ const (
 )
 
 // NewBufferManager initializes a new BufferManager with a specific memory limit.
-func NewBufferManager(dir, filename string, maxSize int) (*BufferManager, error) {
+func NewBufferManager(dir, filename string, maxSize int, wal *WAL) (*BufferManager, error) {
 	pager, err := NewPager(dir, filename)
 	if err != nil {
 		return nil, err
@@ -40,6 +42,7 @@ func NewBufferManager(dir, filename string, maxSize int) (*BufferManager, error)
 		pager:     pager,
 		pageTable: make(map[uint32]*Frame),
 		maxSize:   maxSize,
+		wal:       wal,
 	}, nil
 }
 
@@ -60,6 +63,18 @@ func (bm *BufferManager) FetchPageForWrite(pageID uint32, fallbackPageMode uint8
 		return nil, err
 	}
 	frame.Latch.Lock()
+
+	// Full Page Write (Backup for Torn Pages)
+	// We do this immediately when a clean page is fetched for writing.
+	if !frame.IsDirty && bm.wal != nil {
+		lsn, err := bm.wal.Append(0, pageID, LogOpFullPage, nil, frame.Page.GetData())
+		if err != nil {
+			frame.Latch.Unlock()
+			return nil, err
+		}
+		frame.Page.SetLSN(lsn)
+	}
+
 	return frame.Page, nil
 }
 
