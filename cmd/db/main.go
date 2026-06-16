@@ -22,6 +22,9 @@ func main() {
 
 	// Start the background vacuum process to clean up tombstones every 10 seconds
 	db.StartVacuumRoutine(10 * time.Second)
+	
+	// Start the background checkpoint process to limit recovery time (every 30 seconds for testing)
+	db.StartCheckpointRoutine(30 * time.Second)
 
 	// Ensure we flush everything when we exit!
 	defer db.Close()

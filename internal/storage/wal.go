@@ -27,6 +27,10 @@ type LogRecord struct {
 	OpType uint8  // Logical Operation
 	Key    []byte
 	Value  []byte // Holds value, OR holds full 4KB backup if OpType is LogOpFullPage
+	
+	// TODO(Phase 2 - Transactions): Add PrevLSN uint64 
+	// To perform the Undo phase, each log record must store the LSN of the 
+	// *previous* log record written by the same transaction to allow backward scanning.
 }
 
 // Serialize converts a LogRecord into a binary byte slice.
@@ -108,9 +112,11 @@ func NewWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 
+	stat, _ := file.Stat()
+
 	wal := &WAL{
 		file:       file,
-		currentLSN: 0, // TODO: During recovery, scan WAL to find max LSN instead of starting at 0
+		currentLSN: uint64(stat.Size()), // LSN is exactly the physical byte offset!
 	}
 
 	return wal, nil
@@ -121,7 +127,6 @@ func (w *WAL) Append(txnID, pageID uint32, opType uint8, key, value []byte) (uin
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	w.currentLSN++
 	lsn := w.currentLSN
 
 	rec := &LogRecord{
@@ -141,6 +146,9 @@ func (w *WAL) Append(txnID, pageID uint32, opType uint8, key, value []byte) (uin
 		return 0, err
 	}
 
+	// Advance LSN by the exact bytes written
+	w.currentLSN += uint64(len(data))
+
 	// 2. Fsync to physical disk (Durability)
 	err = w.file.Sync()
 	if err != nil {
@@ -148,6 +156,29 @@ func (w *WAL) Append(txnID, pageID uint32, opType uint8, key, value []byte) (uin
 	}
 
 	return lsn, nil
+}
+
+// ReadRecord reads a single log record from a physical byte offset (LSN).
+func (w *WAL) ReadRecord(lsn uint64) (LogRecord, uint32, error) {
+	sizeBuf := make([]byte, 4)
+	_, err := w.file.ReadAt(sizeBuf, int64(lsn))
+	if err != nil {
+		return LogRecord{}, 0, err
+	}
+
+	size := binary.LittleEndian.Uint32(sizeBuf)
+	if size < 31 {
+		return LogRecord{}, 0, errors.New("corrupted log record size")
+	}
+
+	buf := make([]byte, size)
+	_, err = w.file.ReadAt(buf, int64(lsn))
+	if err != nil {
+		return LogRecord{}, 0, err
+	}
+
+	rec, err := DeserializeLogRecord(buf)
+	return rec, size, err
 }
 
 // Close gracefully shuts down the WAL.
