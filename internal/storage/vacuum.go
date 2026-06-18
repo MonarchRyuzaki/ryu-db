@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"time"
@@ -68,17 +69,43 @@ func (tree *BTree) vacuumLeaf(pageID uint32) error {
 	if err != nil {
 		return err
 	}
-	
+
 	slotCount := leaf.getSlotCount()
 	var cellsToKeep [][]byte
 	cleanedCount := 0
 
+	// We need to find the latest version of each userKey.
+	// Since keys are strictly sorted by [UserKey]\x00[TxID], all versions of a
+	// userKey are contiguous, and the latest version is the last one in the sequence.
 	for i := uint16(0); i < slotCount; i++ {
 		c, _ := leaf.Get(i)
 		kv := DeserializeKVCell(c)
+		userKey := kv.Key[:len(kv.Key)-9]
 
+		isOldVersion := false
+		if i < slotCount-1 {
+			nextC, _ := leaf.Get(i + 1)
+			nextKV := DeserializeKVCell(nextC)
+			nextUserKey := nextKV.Key[:len(nextKV.Key)-9]
+			if bytes.Equal(userKey, nextUserKey) {
+				isOldVersion = true
+			}
+		}
+
+		if isOldVersion {
+			cleanedCount++
+			if kv.IsOverflow() {
+				tree.freeOverflowChain(kv.Value)
+			}
+			continue
+		}
+
+		// This is the latest version of this userKey
 		if kv.IsDeleted() {
 			cleanedCount++
+			if kv.IsOverflow() {
+				tree.freeOverflowChain(kv.Value)
+			}
 		} else {
 			cCopy := make([]byte, len(c))
 			copy(cCopy, c)
