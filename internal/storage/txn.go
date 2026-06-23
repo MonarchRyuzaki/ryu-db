@@ -49,7 +49,10 @@ func (t *TransactionManager) GetLastLSN(txid TxnID) uint64 {
 func (t *TransactionManager) GetStatus(txid TxnID) TxnStatus {
 	t.txnMu.Lock()
 	defer t.txnMu.Unlock()
-	return t.txnTable[txid]
+	if status, exists := t.txnTable[txid]; exists {
+		return status
+	}
+	return TXN_COMMITED
 }
 
 func (t *TransactionManager) Begin() TxnID {

@@ -75,12 +75,18 @@ func handleConnection(conn net.Conn, mvccDB *engine.DB, txMgr *storage.Transacti
 			return
 		default:
 			if client.InTx {
-				executeCommand(conn, mvccDB, client.TxID, text)
+				err := executeCommand(conn, mvccDB, client.TxID, text)
+				if err != nil && strings.Contains(err.Error(), "write-write conflict") {
+					client.InTx = false
+					fmt.Fprintln(conn, "Transaction automatically aborted due to conflict.")
+				}
 			} else {
 				// Auto-commit mode
 				txID := txMgr.Begin()
-				executeCommand(conn, mvccDB, txID, text)
-				txMgr.Commit(txID)
+				err := executeCommand(conn, mvccDB, txID, text)
+				if err == nil {
+					mvccDB.Commit(txID)
+				}
 			}
 		}
 	}
@@ -90,7 +96,7 @@ func handleConnection(conn net.Conn, mvccDB *engine.DB, txMgr *storage.Transacti
 	}
 }
 
-func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line string) {
+func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line string) error {
 	parts := strings.SplitN(line, " ", 3)
 	command := strings.ToUpper(parts[0])
 
@@ -98,7 +104,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line s
 	case "SET":
 		if len(parts) < 3 {
 			fmt.Fprintln(conn, "Usage: SET <key> <value>")
-			return
+			return nil
 		}
 		key := parts[1]
 		value := parts[2]
@@ -107,6 +113,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line s
 		err := mvccDB.Set(txID, key, value)
 		if err != nil {
 			fmt.Fprintf(conn, "Error: %v\n", err)
+			return err
 		} else {
 			fmt.Fprintf(conn, "OK (took %v)\n", time.Since(start))
 		}
@@ -114,7 +121,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line s
 	case "GET":
 		if len(parts) < 2 {
 			fmt.Fprintln(conn, "Usage: GET <key>")
-			return
+			return nil
 		}
 		key := parts[1]
 
@@ -122,6 +129,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line s
 		val, err := mvccDB.Get(txID, key)
 		if err != nil {
 			fmt.Fprintf(conn, "Error: %v\n", err)
+			return err
 		} else {
 			fmt.Fprintf(conn, "\"%s\" (took %v)\n", val, time.Since(start))
 		}
@@ -129,7 +137,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line s
 	case "DELETE":
 		if len(parts) < 2 {
 			fmt.Fprintln(conn, "Usage: DELETE <key>")
-			return
+			return nil
 		}
 		key := parts[1]
 
@@ -137,6 +145,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line s
 		err := mvccDB.Delete(txID, key)
 		if err != nil {
 			fmt.Fprintf(conn, "Error: %v\n", err)
+			return err
 		} else {
 			fmt.Fprintf(conn, "OK (took %v)\n", time.Since(start))
 		}
@@ -144,6 +153,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line s
 	default:
 		fmt.Fprintf(conn, "Unknown command: %s\n", command)
 	}
+	return nil
 }
 
 func main() {

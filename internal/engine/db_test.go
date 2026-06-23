@@ -2,6 +2,7 @@ package engine
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,5 +120,148 @@ func TestMVCC_DeleteTimeTravel(t *testing.T) {
 
 	if string(oldValBytes) != "Bob_V1" {
 		t.Fatalf("Time travel failed. Expected Bob_V1, got %v", string(oldValBytes))
+	}
+}
+
+func TestDB_CommitRollback(t *testing.T) {
+	dbPath := "test_commit_rollback_db"
+	os.RemoveAll(dbPath)
+	os.MkdirAll(dbPath, 0755)
+	defer os.RemoveAll(dbPath)
+
+	index, err := storage.NewBTree("test_commit_rollback", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+	defer index.Close()
+
+	txMgr := storage.NewTransactionManager()
+	db := NewDB(index, txMgr)
+
+	// Test Commit
+	tx1 := txMgr.Begin()
+	err = db.Set(tx1, "key1", "val1")
+	if err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+	
+	// Read before commit should succeed for the same transaction
+	val, err := db.Get(tx1, "key1")
+	if err != nil || val != "val1" {
+		t.Fatalf("Expected val1, got %s, err: %v", val, err)
+	}
+	
+	db.Commit(tx1)
+
+	// New transaction should see committed value
+	tx2 := txMgr.Begin()
+	val, err = db.Get(tx2, "key1")
+	if err != nil || val != "val1" {
+		t.Fatalf("Expected val1 after commit, got %s, err: %v", val, err)
+	}
+
+	// Test Manual Rollback
+	tx3 := txMgr.Begin()
+	err = db.Set(tx3, "key2", "val2")
+	if err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	db.Rollback(tx3)
+
+	// New transaction should NOT see rolled back value
+	tx4 := txMgr.Begin()
+	_, err = db.Get(tx4, "key2")
+	if err == nil {
+		t.Fatalf("Expected error (key not found) for rolled back key2")
+	}
+}
+
+func TestDB_WriteWriteConflict(t *testing.T) {
+	dbPath := "test_conflict_db"
+	os.RemoveAll(dbPath)
+	os.MkdirAll(dbPath, 0755)
+	defer os.RemoveAll(dbPath)
+
+	index, err := storage.NewBTree("test_conflict", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+	defer index.Close()
+
+	txMgr := storage.NewTransactionManager()
+	db := NewDB(index, txMgr)
+
+	tx1 := txMgr.Begin()
+	tx2 := txMgr.Begin()
+
+	// tx1 writes key1
+	err = db.Set(tx1, "conflict_key", "val_tx1")
+	if err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	// tx2 tries to write key1 and should fail
+	err = db.Set(tx2, "conflict_key", "val_tx2")
+	if err == nil || !strings.Contains(err.Error(), "write-write conflict") {
+		t.Fatalf("Expected WW conflict, got: %v", err)
+	}
+
+	// Because of WW conflict, tx2 should be automatically rolled back!
+	status := txMgr.GetStatus(tx2)
+	if status != storage.TXN_ROLLEDBACK {
+		t.Fatalf("Expected tx2 to be automatically rolled back, but status is %d", status)
+	}
+}
+
+func TestDB_RecoveryUndoPhase(t *testing.T) {
+	dbPath := "test_undo_db"
+	os.RemoveAll(dbPath)
+	os.MkdirAll(dbPath, 0755)
+	defer os.RemoveAll(dbPath)
+	
+	index, err := storage.NewBTree("test_undo", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create BTree: %v", err)
+	}
+
+	txMgr := storage.NewTransactionManager()
+	db := NewDB(index, txMgr)
+
+	// Tx1 commits
+	tx1 := txMgr.Begin()
+	db.Set(tx1, "committed_key", "committed_val")
+	db.Commit(tx1)
+
+	// Tx2 does NOT commit (Crash simulation)
+	tx2 := txMgr.Begin()
+	db.Set(tx2, "uncommitted_key", "uncommitted_val")
+	
+	// Simulate Crash
+	index = nil
+	db = nil
+	txMgr = nil
+
+	// Restart and Recover
+	index2, err := storage.NewBTree("test_undo", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to recover BTree: %v", err)
+	}
+	defer index2.Close()
+	txMgr2 := storage.NewTransactionManager()
+	db2 := NewDB(index2, txMgr2)
+
+	tx3 := txMgr2.Begin()
+	
+	// The committed key should exist
+	val, err := db2.Get(tx3, "committed_key")
+	if err != nil || val != "committed_val" {
+		t.Fatalf("Expected committed_val, got %s, err: %v", val, err)
+	}
+
+	// The uncommitted key should NOT exist (Undone during recovery)
+	_, err = db2.Get(tx3, "uncommitted_key")
+	if err == nil {
+		t.Fatalf("Expected uncommitted_key to be undone by recovery, but it was found!")
 	}
 }
