@@ -51,9 +51,14 @@ We successfully traded raw, dangerous speed for absolute **ACID Durability** (cr
 
 You can interact directly with the storage engine using the built-in KV-store REPL. 
 
-### Starting the Database
+### Starting the CLI
 ```bash
 go run ./cmd/db/main.go
+```
+
+### Starting the Database
+```bash
+go run server.go
 ```
 
 ### Commands
