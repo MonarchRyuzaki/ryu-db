@@ -80,13 +80,24 @@ func (tree *BTree) vacuumLeaf(pageID uint32) error {
 	for i := uint16(0); i < slotCount; i++ {
 		c, _ := leaf.Get(i)
 		kv := DeserializeKVCell(c)
-		userKey := kv.Key[:len(kv.Key)-9]
+		var userKey []byte
+		if len(kv.Key) > 9 {
+			userKey = kv.Key[:len(kv.Key)-9]
+		} else {
+			userKey = kv.Key
+		}
 
 		isOldVersion := false
 		if i < slotCount-1 {
 			nextC, _ := leaf.Get(i + 1)
 			nextKV := DeserializeKVCell(nextC)
-			nextUserKey := nextKV.Key[:len(nextKV.Key)-9]
+			
+			var nextUserKey []byte
+			if len(nextKV.Key) > 9 {
+				nextUserKey = nextKV.Key[:len(nextKV.Key)-9]
+			} else {
+				nextUserKey = nextKV.Key
+			}			
 			if bytes.Equal(userKey, nextUserKey) {
 				isOldVersion = true
 			}

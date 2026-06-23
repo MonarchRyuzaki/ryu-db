@@ -22,14 +22,17 @@ func TestMVCC_BasicTimeTravel(t *testing.T) {
 	defer bTree.Close()
 
 	mvccDB := NewDB(bTree)
+	txMgr := storage.NewTransactionManager()
 
 	// 2. Insert Version 1
-	err = mvccDB.Set("UserA", "Alice_V1")
+	tx1 := txMgr.Begin()
+	err = mvccDB.Set(tx1, "UserA", "Alice_V1")
 	if err != nil {
 		t.Fatalf("Failed to set V1: %v", err)
 	}
+	txMgr.Commit(tx1)
 
-	val, err := mvccDB.Get("UserA")
+	val, err := mvccDB.Get(tx1, "UserA")
 	if err != nil || val != "Alice_V1" {
 		t.Fatalf("Expected Alice_V1, got %v (err: %v)", val, err)
 	}
@@ -43,19 +46,23 @@ func TestMVCC_BasicTimeTravel(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 
 	// 4. Insert Version 2
-	err = mvccDB.Set("UserA", "Alice_V2")
+	tx2 := txMgr.Begin()
+	err = mvccDB.Set(tx2, "UserA", "Alice_V2")
 	if err != nil {
 		t.Fatalf("Failed to set V2: %v", err)
 	}
+	txMgr.Commit(tx2)
 
 	// 5. Get should now return Version 2
-	val, err = mvccDB.Get("UserA")
+	tx3 := txMgr.Begin()
+	val, err = mvccDB.Get(tx3, "UserA")
 	if err != nil || val != "Alice_V2" {
 		t.Fatalf("Expected Alice_V2, got %v (err: %v)", val, err)
 	}
+	txMgr.Commit(tx3)
 
 	// 6. Time travel! Ask the raw B-Tree for the version of "UserA" at the boundaryTxID
-	oldSearchKey := BuildMVCCKey([]byte("UserA"), boundaryTxID)
+	oldSearchKey := storage.BuildMVCCKey([]byte("UserA"), boundaryTxID)
 	oldValBytes, err := bTree.FindLatest(oldSearchKey)
 	if err != nil {
 		t.Fatalf("Failed to time travel: %v", err)
@@ -79,25 +86,32 @@ func TestMVCC_DeleteTimeTravel(t *testing.T) {
 	defer bTree.Close()
 
 	mvccDB := NewDB(bTree)
+	txMgr := storage.NewTransactionManager()
 
 	// 1. Insert Version 1
-	mvccDB.Set("UserB", "Bob_V1")
+	tx1 := txMgr.Begin()
+	mvccDB.Set(tx1, "UserB", "Bob_V1")
+	txMgr.Commit(tx1)
 	
 	time.Sleep(2 * time.Millisecond)
 	boundaryTxID := uint64(time.Now().UnixNano())
 	time.Sleep(2 * time.Millisecond)
 
 	// 2. Delete the key (Inserts a Tombstone Version)
-	mvccDB.Delete("UserB")
+	tx2 := txMgr.Begin()
+	mvccDB.Delete(tx2, "UserB")
+	txMgr.Commit(tx2)
 
 	// 3. Ensure it is deleted from the current perspective
-	_, err = mvccDB.Get("UserB")
+	tx3 := txMgr.Begin()
+	_, err = mvccDB.Get(tx3, "UserB")
 	if err == nil {
 		t.Fatalf("Expected error getting deleted key")
 	}
+	txMgr.Commit(tx3)
 
 	// 4. Time travel back to before it was deleted!
-	oldSearchKey := BuildMVCCKey([]byte("UserB"), boundaryTxID)
+	oldSearchKey := storage.BuildMVCCKey([]byte("UserB"), boundaryTxID)
 	oldValBytes, err := bTree.FindLatest(oldSearchKey)
 	if err != nil {
 		t.Fatalf("Failed to time travel to deleted key: %v", err)

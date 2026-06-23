@@ -14,22 +14,21 @@ import (
 
 // ClientState represents the state of a connected client.
 type ClientState struct {
-	Conn       net.Conn
-	InTx       bool
-	TxCommands []string
+	Conn net.Conn
+	InTx bool
+	TxID storage.TxnID
 }
 
 // NewClientState initializes a new ClientState.
 func NewClientState(conn net.Conn) *ClientState {
 	return &ClientState{
-		Conn:       conn,
-		InTx:       false,
-		TxCommands: make([]string, 0),
+		Conn: conn,
+		InTx: false,
 	}
 }
 
 // handleConnection handles incoming client connections.
-func handleConnection(conn net.Conn, mvccDB *engine.DB) {
+func handleConnection(conn net.Conn, mvccDB *engine.DB, txMgr *storage.TransactionManager) {
 	defer conn.Close()
 	client := NewClientState(conn)
 
@@ -52,26 +51,23 @@ func handleConnection(conn net.Conn, mvccDB *engine.DB) {
 				fmt.Fprintln(conn, "ERR BEGIN calls can not be nested")
 			} else {
 				client.InTx = true
-				client.TxCommands = make([]string, 0)
+				client.TxID = txMgr.Begin()
 				fmt.Fprintln(conn, "OK")
 			}
 		case "COMMIT":
 			if !client.InTx {
 				fmt.Fprintln(conn, "ERR COMMIT without BEGIN")
 			} else {
-				for _, txCmd := range client.TxCommands {
-					executeCommand(conn, mvccDB, txCmd)
-				}
+				txMgr.Commit(client.TxID)
 				client.InTx = false
-				client.TxCommands = nil
 				fmt.Fprintln(conn, "OK")
 			}
 		case "ROLLBACK":
 			if !client.InTx {
 				fmt.Fprintln(conn, "ERR ROLLBACK without BEGIN")
 			} else {
+				txMgr.Rollback(client.TxID)
 				client.InTx = false
-				client.TxCommands = nil
 				fmt.Fprintln(conn, "OK")
 			}
 		case "QUIT", "EXIT":
@@ -79,10 +75,12 @@ func handleConnection(conn net.Conn, mvccDB *engine.DB) {
 			return
 		default:
 			if client.InTx {
-				client.TxCommands = append(client.TxCommands, text)
-				fmt.Fprintln(conn, "QUEUED")
+				executeCommand(conn, mvccDB, client.TxID, text)
 			} else {
-				executeCommand(conn, mvccDB, text)
+				// Auto-commit mode
+				txID := txMgr.Begin()
+				executeCommand(conn, mvccDB, txID, text)
+				txMgr.Commit(txID)
 			}
 		}
 	}
@@ -92,7 +90,7 @@ func handleConnection(conn net.Conn, mvccDB *engine.DB) {
 	}
 }
 
-func executeCommand(conn net.Conn, mvccDB *engine.DB, line string) {
+func executeCommand(conn net.Conn, mvccDB *engine.DB, txID storage.TxnID, line string) {
 	parts := strings.SplitN(line, " ", 3)
 	command := strings.ToUpper(parts[0])
 
@@ -106,7 +104,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, line string) {
 		value := parts[2]
 
 		start := time.Now()
-		err := mvccDB.Set(key, value)
+		err := mvccDB.Set(txID, key, value)
 		if err != nil {
 			fmt.Fprintf(conn, "Error: %v\n", err)
 		} else {
@@ -121,7 +119,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, line string) {
 		key := parts[1]
 
 		start := time.Now()
-		val, err := mvccDB.Get(key)
+		val, err := mvccDB.Get(txID, key)
 		if err != nil {
 			fmt.Fprintf(conn, "Error: %v\n", err)
 		} else {
@@ -136,7 +134,7 @@ func executeCommand(conn net.Conn, mvccDB *engine.DB, line string) {
 		key := parts[1]
 
 		start := time.Now()
-		err := mvccDB.Delete(key)
+		err := mvccDB.Delete(txID, key)
 		if err != nil {
 			fmt.Fprintf(conn, "Error: %v\n", err)
 		} else {
@@ -163,6 +161,7 @@ func main() {
 	
 	// Wrap the BTree in our MVCC Engine
 	mvccDB := engine.NewDB(db)
+	txMgr := storage.NewTransactionManager()
 
 	port := "8080"
 	listener, err := net.Listen("tcp", ":"+port)
@@ -181,6 +180,6 @@ func main() {
 		}
 
 		log.Printf("Accepted connection from %s\n", conn.RemoteAddr().String())
-		go handleConnection(conn, mvccDB)
+		go handleConnection(conn, mvccDB, txMgr)
 	}
 }
