@@ -4,7 +4,7 @@
 
 What started as an attempt to write separate, isolated implementations of different concepts (like a B-Tree, a Buffer Pool, and a WAL) accidentally evolved and wired itself together into a cohesive, fully functional database engine built entirely from scratch in Go. 
 
-To be clear: **I am not competing with production-grade databases like PostgreSQL or MySQL!** This project is purely a personal learning sandbox. However, by strictly adhering to database theory, the engine surprisingly achieves robust ACID compliance, lock-free MVCC isolation, and ARIES Crash Recovery.
+This project is purely a personal learning sandbox. However, by strictly adhering to database theory, the engine surprisingly achieves robust ACID compliance, lock-free MVCC isolation, and ARIES Crash Recovery.
 
 ## 🚀 Features
 
