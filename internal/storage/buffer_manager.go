@@ -68,7 +68,7 @@ func (bm *BufferManager) FetchPageForWrite(pageID uint32, fallbackPageMode uint8
 	// Full Page Write (Backup for Torn Pages)
 	// We do this immediately when a clean page is fetched for writing.
 	if !frame.IsDirty && bm.wal != nil {
-		lsn, err := bm.wal.Append(0, pageID, LogOpFullPage, nil, frame.Page.GetData())
+		lsn, err := bm.wal.Append(0, pageID, 0, LogOpFullPage, nil, frame.Page.GetData())
 		if err != nil {
 			frame.Latch.Unlock()
 			return nil, err

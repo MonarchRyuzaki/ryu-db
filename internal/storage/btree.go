@@ -96,12 +96,12 @@ func NewBTree(tableName string, dir string) (*BTree, error) {
 		}
 		metaPage.SetRootPageID(rootID)
 		metaPage.SetFirstFreePageID(0)
-		
+
 		if tree.wal != nil {
-			lsn, _ := tree.wal.Append(0, metaID, LogOpFullPage, nil, metaPage.GetData())
+			lsn, _ := tree.wal.Append(0, metaID, 0, LogOpFullPage, nil, metaPage.GetData())
 			metaPage.SetLSN(lsn)
 		}
-		
+
 		bm.UnpinPage(metaID, true, true)
 
 		tree.rootPageID = rootID
@@ -489,15 +489,25 @@ func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8, txMgr *Trans
 			leaf.Insert(c) // Re-insert all cells
 		}
 
+		var lsn uint64
 		if tree.wal != nil {
 			op := LogOpInsert
 			if flag == KEY_DELETED_FLAG {
 				op = LogOpDelete
 			}
-			lsn, err := tree.wal.Append(0, leaf.GetPageID(), op, key, value)
-			if err != nil {
+			var prevLSN uint64 = 0
+			if txMgr != nil {
+				prevLSN = txMgr.GetLastLSN(writerTxID)
+			}
+
+			var errAppend error
+			lsn, errAppend = tree.wal.Append(uint64(writerTxID), leaf.GetPageID(), prevLSN, op, key, value)
+			if errAppend != nil {
 				tree.bm.UnpinPage(leaf.GetPageID(), true, true)
-				return err
+				return errAppend
+			}
+			if txMgr != nil {
+				txMgr.SetLastLSN(writerTxID, lsn)
 			}
 			leaf.SetLSN(lsn)
 		}
@@ -546,9 +556,9 @@ func (tree *BTree) splitLeafCells(leaf *Page, path []uint32, cells [][]byte) err
 
 	// Log AFTER state of split pages
 	if tree.wal != nil {
-		lsn1, _ := tree.wal.Append(0, leaf.GetPageID(), LogOpFullPage, nil, leaf.GetData())
+		lsn1, _ := tree.wal.Append(0, leaf.GetPageID(), 0, LogOpFullPage, nil, leaf.GetData())
 		leaf.SetLSN(lsn1)
-		lsn2, _ := tree.wal.Append(0, newLeaf.GetPageID(), LogOpFullPage, nil, newLeaf.GetData())
+		lsn2, _ := tree.wal.Append(0, newLeaf.GetPageID(), 0, LogOpFullPage, nil, newLeaf.GetData())
 		newLeaf.SetLSN(lsn2)
 	}
 
@@ -575,7 +585,7 @@ func (tree *BTree) insertIntoParent(leftChildID uint32, routingCell []byte, path
 		tree.rootPageID = newRootID
 
 		if tree.wal != nil {
-			lsn, _ := tree.wal.Append(0, newRootID, LogOpFullPage, nil, newRoot.GetData())
+			lsn, _ := tree.wal.Append(0, newRootID, 0, LogOpFullPage, nil, newRoot.GetData())
 			newRoot.SetLSN(lsn)
 		}
 
@@ -583,9 +593,9 @@ func (tree *BTree) insertIntoParent(leftChildID uint32, routingCell []byte, path
 		metaPage, _ := tree.bm.FetchPageForWrite(MetaPageID, PageTypeMeta)
 		if metaPage != nil {
 			metaPage.SetRootPageID(newRootID)
-			
+
 			if tree.wal != nil {
-				lsn, _ := tree.wal.Append(0, MetaPageID, LogOpFullPage, nil, metaPage.GetData())
+				lsn, _ := tree.wal.Append(0, MetaPageID, 0, LogOpFullPage, nil, metaPage.GetData())
 				metaPage.SetLSN(lsn)
 			}
 			tree.bm.UnpinPage(MetaPageID, true, true)
@@ -635,7 +645,7 @@ func (tree *BTree) insertIntoParent(leftChildID uint32, routingCell []byte, path
 		}
 
 		if tree.wal != nil {
-			lsn, _ := tree.wal.Append(0, parentID, LogOpFullPage, nil, parent.GetData())
+			lsn, _ := tree.wal.Append(0, parentID, 0, LogOpFullPage, nil, parent.GetData())
 			parent.SetLSN(lsn)
 		}
 
@@ -704,9 +714,9 @@ func (tree *BTree) splitInternal(internalNode *Page, path []uint32, newCell []by
 	routingCell := NewKeyCell(newInternalID, routingKey).Serialize()
 
 	if tree.wal != nil {
-		lsn1, _ := tree.wal.Append(0, internalNode.GetPageID(), LogOpFullPage, nil, internalNode.GetData())
+		lsn1, _ := tree.wal.Append(0, internalNode.GetPageID(), 0, LogOpFullPage, nil, internalNode.GetData())
 		internalNode.SetLSN(lsn1)
-		lsn2, _ := tree.wal.Append(0, newInternalID, LogOpFullPage, nil, newInternal.GetData())
+		lsn2, _ := tree.wal.Append(0, newInternalID, 0, LogOpFullPage, nil, newInternal.GetData())
 		newInternal.SetLSN(lsn2)
 	}
 

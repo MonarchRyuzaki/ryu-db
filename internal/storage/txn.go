@@ -16,6 +16,7 @@ type TxnStatus uint8
 
 type TransactionManager struct {
 	txnTable map[TxnID]TxnStatus
+	lsnTable map[TxnID]uint64
 
 	txnMu sync.Mutex
 }
@@ -23,6 +24,7 @@ type TransactionManager struct {
 func NewTransactionManager() *TransactionManager {
 	return &TransactionManager{
 		txnTable: make(map[TxnID]TxnStatus),
+		lsnTable: make(map[TxnID]uint64),
 	}
 }
 
@@ -30,6 +32,18 @@ func (t *TransactionManager) SetStatus(txid TxnID, status TxnStatus) {
 	t.txnMu.Lock()
 	defer t.txnMu.Unlock()
 	t.txnTable[txid] = status
+}
+
+func (t *TransactionManager) SetLastLSN(txid TxnID, lsn uint64) {
+	t.txnMu.Lock()
+	defer t.txnMu.Unlock()
+	t.lsnTable[txid] = lsn
+}
+
+func (t *TransactionManager) GetLastLSN(txid TxnID) uint64 {
+	t.txnMu.Lock()
+	defer t.txnMu.Unlock()
+	return t.lsnTable[txid]
 }
 
 func (t *TransactionManager) GetStatus(txid TxnID) TxnStatus {

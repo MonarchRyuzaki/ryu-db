@@ -22,32 +22,32 @@ const (
 // LogRecord represents a single physiological operation in the WAL.
 type LogRecord struct {
 	LSN    uint64 // Log Sequence Number (monotonically increasing)
-	TxnID  uint32 // Transaction ID
+	TxnID  uint64 // Transaction ID
+	PrevLSN uint64 
+	// To perform the Undo phase, each log record must store the LSN of the 
+	// *previous* log record written by the same transaction to allow backward scanning.
 	PageID uint32 // Physical Page ID
 	OpType uint8  // Logical Operation
 	Key    []byte
 	Value  []byte // Holds value, OR holds full 4KB backup if OpType is LogOpFullPage
-	
-	// TODO(Phase 2 - Transactions): Add PrevLSN uint64 
-	// To perform the Undo phase, each log record must store the LSN of the 
-	// *previous* log record written by the same transaction to allow backward scanning.
 }
 
 // Serialize converts a LogRecord into a binary byte slice.
 // Layout: [Size(4)][LSN(8)][TxnID(4)][PageID(4)][Op(1)][KeyLen(2)][ValLen(4)][Key...][Val...][CRC(4)]
 func (l *LogRecord) Serialize() []byte {
-	totalSize := 4 + 8 + 4 + 4 + 1 + 2 + 4 + len(l.Key) + len(l.Value) + 4
+	totalSize := 4 + 8 + 8 + 4 + 1 + 8 + 2 + 4 + len(l.Key) + len(l.Value) + 4
 	buf := make([]byte, totalSize)
 
 	binary.LittleEndian.PutUint32(buf[0:4], uint32(totalSize))
 	binary.LittleEndian.PutUint64(buf[4:12], l.LSN)
-	binary.LittleEndian.PutUint32(buf[12:16], l.TxnID)
-	binary.LittleEndian.PutUint32(buf[16:20], l.PageID)
-	buf[20] = l.OpType
-	binary.LittleEndian.PutUint16(buf[21:23], uint16(len(l.Key)))
-	binary.LittleEndian.PutUint32(buf[23:27], uint32(len(l.Value)))
+	binary.LittleEndian.PutUint64(buf[12:20], l.TxnID)
+	binary.LittleEndian.PutUint32(buf[20:24], l.PageID)
+	buf[24] = l.OpType
+	binary.LittleEndian.PutUint64(buf[25:33], l.PrevLSN)
+	binary.LittleEndian.PutUint16(buf[33:35], uint16(len(l.Key)))
+	binary.LittleEndian.PutUint32(buf[35:39], uint32(len(l.Value)))
 
-	offset := 27
+	offset := 39
 	copy(buf[offset:], l.Key)
 	offset += len(l.Key)
 	copy(buf[offset:], l.Value)
@@ -63,7 +63,7 @@ func (l *LogRecord) Serialize() []byte {
 // DeserializeLogRecord parses a byte slice back into a LogRecord.
 // It verifies the CRC32 checksum to protect against torn log entries.
 func DeserializeLogRecord(data []byte) (LogRecord, error) {
-	if len(data) < 31 {
+	if len(data) < 43 {
 		return LogRecord{}, errors.New("log record too small")
 	}
 
@@ -82,14 +82,15 @@ func DeserializeLogRecord(data []byte) (LogRecord, error) {
 
 	rec := LogRecord{}
 	rec.LSN = binary.LittleEndian.Uint64(data[4:12])
-	rec.TxnID = binary.LittleEndian.Uint32(data[12:16])
-	rec.PageID = binary.LittleEndian.Uint32(data[16:20])
-	rec.OpType = data[20]
+	rec.TxnID = binary.LittleEndian.Uint64(data[12:20])
+	rec.PageID = binary.LittleEndian.Uint32(data[20:24])
+	rec.OpType = data[24]
+	rec.PrevLSN = binary.LittleEndian.Uint64(data[25:33])
 
-	keyLen := binary.LittleEndian.Uint16(data[21:23])
-	valLen := binary.LittleEndian.Uint32(data[23:27])
+	keyLen := binary.LittleEndian.Uint16(data[33:35])
+	valLen := binary.LittleEndian.Uint32(data[35:39])
 
-	offset := 27
+	offset := 39
 	// Zero-copy deserialization: slice directly from the buffer!
 	rec.Key = data[offset : offset+int(keyLen)]
 	offset += int(keyLen)
@@ -133,19 +134,20 @@ func NewWAL(path string) (*WAL, error) {
 }
 
 // Append writes a new record to the WAL and fsyncs to ensure durability.
-func (w *WAL) Append(txnID, pageID uint32, opType uint8, key, value []byte) (uint64, error) {
+func (w *WAL) Append(txnID uint64, pageID uint32, prevLSN uint64, opType uint8, key, value []byte) (uint64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	lsn := w.currentLSN
 
 	rec := &LogRecord{
-		LSN:    lsn,
-		TxnID:  txnID,
-		PageID: pageID,
-		OpType: opType,
-		Key:    key,
-		Value:  value,
+		LSN:     lsn,
+		TxnID:   txnID,
+		PageID:  pageID,
+		PrevLSN: prevLSN,
+		OpType:  opType,
+		Key:     key,
+		Value:   value,
 	}
 
 	data := rec.Serialize()
@@ -177,7 +179,7 @@ func (w *WAL) ReadRecord(lsn uint64) (LogRecord, uint32, error) {
 	}
 
 	size := binary.LittleEndian.Uint32(sizeBuf)
-	if size < 31 {
+	if size < 43 {
 		return LogRecord{}, 0, errors.New("corrupted log record size")
 	}
 
@@ -212,7 +214,7 @@ func (w *WAL) WriteCheckpoint(dpt map[uint32]uint64) (uint64, error) {
 	}
 	
 	// Append the checkpoint record (TxnID=0, PageID=0)
-	lsn, err := w.Append(0, 0, LogOpCheckpoint, nil, buf)
+	lsn, err := w.Append(0, 0, 0, LogOpCheckpoint, nil, buf)
 	if err != nil {
 		return 0, err
 	}
