@@ -72,3 +72,13 @@ func BuildMVCCKey(key []byte, txID uint64) []byte {
 	binary.BigEndian.PutUint64(mvccKey[len(key)+1:], txID)
 	return mvccKey
 }
+
+// ExtractMVCCKey extracts the original UserKey and TxID from a concatenated MVCC key.
+func ExtractMVCCKey(mvccKey []byte) (userKey []byte, txID TxnID) {
+	if len(mvccKey) <= 9 {
+		return mvccKey, 0
+	}
+	userKey = mvccKey[:len(mvccKey)-9]
+	txID = TxnID(binary.BigEndian.Uint64(mvccKey[len(mvccKey)-8:]))
+	return userKey, txID
+}

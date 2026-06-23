@@ -160,8 +160,8 @@ func main() {
 	db.StartVacuumRoutine(10 * time.Second)
 	
 	// Wrap the BTree in our MVCC Engine
-	mvccDB := engine.NewDB(db)
 	txMgr := storage.NewTransactionManager()
+	mvccDB := engine.NewDB(db, txMgr)
 
 	port := "8080"
 	listener, err := net.Listen("tcp", ":"+port)

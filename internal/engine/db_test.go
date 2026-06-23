@@ -21,8 +21,8 @@ func TestMVCC_BasicTimeTravel(t *testing.T) {
 	}
 	defer bTree.Close()
 
-	mvccDB := NewDB(bTree)
 	txMgr := storage.NewTransactionManager()
+	mvccDB := NewDB(bTree, txMgr)
 
 	// 2. Insert Version 1
 	tx1 := txMgr.Begin()
@@ -63,7 +63,7 @@ func TestMVCC_BasicTimeTravel(t *testing.T) {
 
 	// 6. Time travel! Ask the raw B-Tree for the version of "UserA" at the boundaryTxID
 	oldSearchKey := storage.BuildMVCCKey([]byte("UserA"), boundaryTxID)
-	oldValBytes, err := bTree.FindLatest(oldSearchKey)
+	oldValBytes, err := bTree.FindLatest(oldSearchKey, txMgr)
 	if err != nil {
 		t.Fatalf("Failed to time travel: %v", err)
 	}
@@ -85,8 +85,8 @@ func TestMVCC_DeleteTimeTravel(t *testing.T) {
 	}
 	defer bTree.Close()
 
-	mvccDB := NewDB(bTree)
 	txMgr := storage.NewTransactionManager()
+	mvccDB := NewDB(bTree, txMgr)
 
 	// 1. Insert Version 1
 	tx1 := txMgr.Begin()
@@ -112,7 +112,7 @@ func TestMVCC_DeleteTimeTravel(t *testing.T) {
 
 	// 4. Time travel back to before it was deleted!
 	oldSearchKey := storage.BuildMVCCKey([]byte("UserB"), boundaryTxID)
-	oldValBytes, err := bTree.FindLatest(oldSearchKey)
+	oldValBytes, err := bTree.FindLatest(oldSearchKey, txMgr)
 	if err != nil {
 		t.Fatalf("Failed to time travel to deleted key: %v", err)
 	}

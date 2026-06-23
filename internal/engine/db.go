@@ -7,12 +7,14 @@ import (
 // DB is the MVCC Coordinator that wraps the generic B-Tree storage engine.
 type DB struct {
 	index storage.Index
+	txMgr *storage.TransactionManager
 }
 
 // NewDB creates a new MVCC Database wrapper.
-func NewDB(index storage.Index) *DB {
+func NewDB(index storage.Index, txMgr *storage.TransactionManager) *DB {
 	return &DB{
 		index: index,
+		txMgr: txMgr,
 	}
 }
 
@@ -26,7 +28,7 @@ func (db *DB) Set(txID storage.TxnID, key string, value string) error {
 func (db *DB) Get(txID storage.TxnID, key string) (string, error) {
 	mvccKey := storage.BuildMVCCKey([]byte(key), uint64(txID))
 
-	valBytes, err := db.index.FindLatest(mvccKey)
+	valBytes, err := db.index.FindLatest(mvccKey, db.txMgr)
 	if err != nil {
 		return "", err
 	}
