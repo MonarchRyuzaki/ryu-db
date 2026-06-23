@@ -1,8 +1,7 @@
 package engine
 
 import (
-	"encoding/binary"
-	"time"
+	"strings"
 
 	"github.com/MonarchRyuzaki/db-internals/internal/storage"
 )
@@ -10,43 +9,35 @@ import (
 // DB is the MVCC Coordinator that wraps the generic B-Tree storage engine.
 type DB struct {
 	index storage.Index
+	txMgr *storage.TransactionManager
 }
 
 // NewDB creates a new MVCC Database wrapper.
-func NewDB(index storage.Index) *DB {
+func NewDB(index storage.Index, txMgr *storage.TransactionManager) *DB {
 	return &DB{
 		index: index,
+		txMgr: txMgr,
 	}
 }
 
-// generateTxID generates a monotonically increasing Transaction ID.
-// For now, we use UnixNano to guarantee unique, increasing IDs.
-func (db *DB) generateTxID() uint64 {
-	return uint64(time.Now().UnixNano())
-}
-
-// BuildMVCCKey formats the key as: [UserKey] + [\x00] + [8-byte BigEndian TxID]
-func BuildMVCCKey(key []byte, txID uint64) []byte {
-	mvccKey := make([]byte, len(key)+9)
-	copy(mvccKey, key)
-	mvccKey[len(key)] = 0x00
-	binary.BigEndian.PutUint64(mvccKey[len(key)+1:], txID)
-	return mvccKey
-}
-
 // Set inserts or updates a key with a new MVCC version.
-func (db *DB) Set(key string, value string) error {
-	txID := db.generateTxID()
-	mvccKey := BuildMVCCKey([]byte(key), txID)
-	return db.index.Insert(mvccKey, []byte(value))
+func (db *DB) Set(txID storage.TxnID, key string, value string) error {
+	mvccKey := storage.BuildMVCCKey([]byte(key), uint64(txID))
+	err := db.index.Insert(mvccKey, []byte(value), db.txMgr)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "write-write conflict") {
+			db.index.Rollback(txID, db.txMgr)
+		}
+		return err
+	}
+	return nil
 }
 
 // Get retrieves the latest committed version of the key.
-func (db *DB) Get(key string) (string, error) {
-	txID := db.generateTxID()
-	mvccKey := BuildMVCCKey([]byte(key), txID)
-	
-	valBytes, err := db.index.FindLatest(mvccKey)
+func (db *DB) Get(txID storage.TxnID, key string) (string, error) {
+	mvccKey := storage.BuildMVCCKey([]byte(key), uint64(txID))
+
+	valBytes, err := db.index.FindLatest(mvccKey, db.txMgr)
 	if err != nil {
 		return "", err
 	}
@@ -54,8 +45,24 @@ func (db *DB) Get(key string) (string, error) {
 }
 
 // Delete marks the key as deleted by inserting a Tombstone version.
-func (db *DB) Delete(key string) error {
-	txID := db.generateTxID()
-	mvccKey := BuildMVCCKey([]byte(key), txID)
-	return db.index.Delete(mvccKey)
+func (db *DB) Delete(txID storage.TxnID, key string) error {
+	mvccKey := storage.BuildMVCCKey([]byte(key), uint64(txID))
+	err := db.index.Delete(mvccKey, db.txMgr)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "write-write conflict") {
+			db.index.Rollback(txID, db.txMgr)
+		}
+		return err
+	}
+	return nil
+}
+
+// Rollback manually aborts a transaction, triggering the undo phase.
+func (db *DB) Rollback(txID storage.TxnID) error {
+	return db.index.Rollback(txID, db.txMgr)
+}
+
+// Commit finalizes a transaction.
+func (db *DB) Commit(txID storage.TxnID) error {
+	return db.index.Commit(txID, db.txMgr)
 }

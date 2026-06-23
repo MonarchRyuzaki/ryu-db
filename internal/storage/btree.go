@@ -26,10 +26,12 @@ import (
 
 // Index is the interface that any tree or hash index must implement.
 type Index interface {
-	Insert(key []byte, value []byte) error
+	Insert(key []byte, value []byte, txMgr *TransactionManager) error
 	Find(key []byte) ([]byte, error)
-	FindLatest(mvccUserKey []byte) ([]byte, error)
-	Delete(key []byte) error
+	FindLatest(mvccUserKey []byte, txMgr *TransactionManager) ([]byte, error)
+	Delete(key []byte, txMgr *TransactionManager) error
+	Rollback(txid TxnID, txMgr *TransactionManager) error
+	Commit(txid TxnID, txMgr *TransactionManager) error
 }
 
 // BTree implements the Index interface using a B+ Tree over the BufferManager.
@@ -96,12 +98,12 @@ func NewBTree(tableName string, dir string) (*BTree, error) {
 		}
 		metaPage.SetRootPageID(rootID)
 		metaPage.SetFirstFreePageID(0)
-		
+
 		if tree.wal != nil {
-			lsn, _ := tree.wal.Append(0, metaID, LogOpFullPage, nil, metaPage.GetData())
+			lsn, _ := tree.wal.Append(0, metaID, 0, LogOpFullPage, nil, metaPage.GetData())
 			metaPage.SetLSN(lsn)
 		}
-		
+
 		bm.UnpinPage(metaID, true, true)
 
 		tree.rootPageID = rootID
@@ -287,11 +289,38 @@ func (tree *BTree) findLeafPage(key []byte, forWrite bool) (*Page, []uint32, err
 	}
 }
 
-// FindLatest searches for the most recent version of a key that is <= maxTxID.
-// This is used exclusively for MVCC reads.
-func (tree *BTree) FindLatest(mvccUserKey []byte) ([]byte, error) {
-	userKey := mvccUserKey[:len(mvccUserKey)-9]
+// isVersionVisible checks if a specific MVCC version cell is visible to the reader.
+func isVersionVisible(kvKey []byte, mvccUserKey []byte, txMgr *TransactionManager) bool {
+	userKey, readerTxID := ExtractMVCCKey(mvccUserKey)
+	kvKey, versionTxID := ExtractMVCCKey(kvKey)
 
+	// Is it the exact same user key?
+	if !bytes.Equal(kvKey, userKey) {
+		return false
+	}
+
+	// Is the version older than or equal to our reader TxID?
+	if versionTxID > readerTxID {
+		return false // It's from the future
+	}
+
+	// Is the version committed, or does it belong to us?
+	if versionTxID == readerTxID {
+		return true // We can always see our own writes
+	}
+
+	if txMgr != nil {
+		status := txMgr.GetStatus(versionTxID)
+		if status != TXN_COMMITED {
+			return false // It's from another active/aborted transaction
+		}
+	}
+
+	return true
+}
+
+// FindLatest searches for the most recent version of a key that is visible to the reader.
+func (tree *BTree) FindLatest(mvccUserKey []byte, txMgr *TransactionManager) ([]byte, error) {
 	leaf, _, err := tree.findLeafPage(mvccUserKey, false)
 	if err != nil {
 		return nil, err
@@ -301,18 +330,13 @@ func (tree *BTree) FindLatest(mvccUserKey []byte) ([]byte, error) {
 	slotCount := leaf.getSlotCount()
 	var bestKV *KVCell
 
-	// Scan to find the largest matching key that is <= our searchKey
 	for i := uint16(0); i < slotCount; i++ {
 		c, _ := leaf.Get(i)
 		kv := DeserializeKVCell(c)
 
-		// Check if it exactly matches the userKey prefix
-		if len(kv.Key) > len(userKey) && bytes.Equal(kv.Key[:len(userKey)], userKey) && kv.Key[len(userKey)] == 0x00 {
-			// Check if the TxID is <= our maxTxID
-			if bytes.Compare(kv.Key, mvccUserKey) <= 0 {
-				if bestKV == nil || bytes.Compare(kv.Key, bestKV.Key) > 0 {
-					bestKV = kv
-				}
+		if isVersionVisible(kv.Key, mvccUserKey, txMgr) {
+			if bestKV == nil || bytes.Compare(kv.Key, bestKV.Key) > 0 {
+				bestKV = kv
 			}
 		}
 	}
@@ -362,18 +386,71 @@ func (tree *BTree) Find(key []byte) ([]byte, error) {
 }
 
 // Insert adds a new key-value pair to the B+ tree. If the key already exists, it updates it (Upsert).
-func (tree *BTree) Insert(key []byte, value []byte) error {
-	return tree.upsertCell(key, value, 0)
+func (tree *BTree) Insert(key []byte, value []byte, txMgr *TransactionManager) error {
+	return tree.upsertCell(key, value, 0, txMgr)
 }
 
 // Delete removes a key from the B+ tree using a Tombstone approach.
-func (tree *BTree) Delete(key []byte) error {
+func (tree *BTree) Delete(key []byte, txMgr *TransactionManager) error {
 	// KEY_DELETED_FLAG indicates a Tombstone (deleted) cell
-	return tree.upsertCell(key, nil, KEY_DELETED_FLAG)
+	return tree.upsertCell(key, nil, KEY_DELETED_FLAG, txMgr)
+}
+
+// Rollback undoes all operations of a transaction by traversing the PrevLSN chain.
+func (tree *BTree) Rollback(txid TxnID, txMgr *TransactionManager) error {
+	txMgr.SetStatus(txid, TXN_ROLLINGBACK)
+
+	lsn := txMgr.GetLastLSN(txid)
+	
+	for lsn != 0 {
+		rec, _, err := tree.wal.ReadRecord(lsn)
+		if err != nil {
+			return err
+		}
+
+		if rec.OpType == LogOpInsert || rec.OpType == LogOpDelete {
+			page, err := tree.bm.FetchPageForWrite(rec.PageID, PageTypeLeaf)
+			if err == nil {
+				inverseOp := LogOpDelete
+				if rec.OpType == LogOpDelete {
+					inverseOp = LogOpInsert
+				}
+				tree.redoUpsertOnPage(page, rec.Key, rec.Value, inverseOp)
+				
+				// Write CLR
+				clrLSN, _ := tree.wal.Append(uint64(txid), rec.PageID, rec.PrevLSN, LogOpCLR, rec.Key, rec.Value)
+				page.SetLSN(clrLSN)
+				tree.bm.UnpinPage(rec.PageID, true, true)
+			}
+		}
+		
+		lsn = rec.PrevLSN
+	}
+
+	if tree.wal != nil {
+		tree.wal.Append(uint64(txid), 0, 0, LogOpAbort, nil, nil)
+	}
+
+	txMgr.SetStatus(txid, TXN_ROLLEDBACK)
+	return nil
+}
+
+// Commit finalizes a transaction by appending a LogOpCommit record to the WAL.
+func (tree *BTree) Commit(txid TxnID, txMgr *TransactionManager) error {
+	if tree.wal != nil {
+		prevLSN := txMgr.GetLastLSN(txid)
+		lsn, err := tree.wal.Append(uint64(txid), 0, prevLSN, LogOpCommit, nil, nil)
+		if err != nil {
+			return err
+		}
+		txMgr.SetLastLSN(txid, lsn)
+	}
+	txMgr.SetStatus(txid, TXN_COMMITED)
+	return nil
 }
 
 // upsertCell handles the actual insertion, updating, or tombstoning of a cell.
-func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8) error {
+func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8, txMgr *TransactionManager) error {
 	leaf, path, err := tree.findLeafPage(key, true)
 	if err != nil {
 		return err
@@ -400,10 +477,32 @@ func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8) error {
 	// We start the space calculation with the header size
 	totalSpaceNeeded := HeaderSize
 
+	writerUserKey, writerTxID := ExtractMVCCKey(key)
+
 	// Extract all cells. If we find the key, we swap its byte data with the new cell.
 	for i := uint16(0); i < slotCount; i++ {
 		c, _ := leaf.Get(i)
 		kv := DeserializeKVCell(c)
+
+		kvUserKey, kvTxID := ExtractMVCCKey(kv.Key)
+
+		// MVCC Write-Write Conflict Detection (First-Updater-Wins)
+		if bytes.Equal(kvUserKey, writerUserKey) && txMgr != nil && kvTxID != writerTxID {
+			status := txMgr.GetStatus(kvTxID)
+			
+			// TODO: Handle when status is rolling back or rolled back
+			// If another transaction is currently modifying this key, we abort (WW Conflict)
+			if status == TXN_RUNNING {
+				tree.bm.UnpinPage(leaf.GetPageID(), false, true)
+				return fmt.Errorf("write-write conflict: key %s is currently locked by active transaction %d", string(writerUserKey), kvTxID)
+			}
+			
+			// If a future transaction already committed a write to this key, we abort (WW Conflict)
+			if status == TXN_COMMITED && kvTxID > writerTxID {
+				tree.bm.UnpinPage(leaf.GetPageID(), false, true)
+				return fmt.Errorf("write-write conflict: key %s was modified by a newer committed transaction %d", string(writerUserKey), kvTxID)
+			}
+		}
 
 		var cellToKeep []byte
 		if bytes.Equal(kv.Key, key) {
@@ -446,15 +545,25 @@ func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8) error {
 			leaf.Insert(c) // Re-insert all cells
 		}
 
+		var lsn uint64
 		if tree.wal != nil {
 			op := LogOpInsert
 			if flag == KEY_DELETED_FLAG {
 				op = LogOpDelete
 			}
-			lsn, err := tree.wal.Append(0, leaf.GetPageID(), op, key, value)
-			if err != nil {
+			var prevLSN uint64 = 0
+			if txMgr != nil {
+				prevLSN = txMgr.GetLastLSN(writerTxID)
+			}
+
+			var errAppend error
+			lsn, errAppend = tree.wal.Append(uint64(writerTxID), leaf.GetPageID(), prevLSN, op, key, value)
+			if errAppend != nil {
 				tree.bm.UnpinPage(leaf.GetPageID(), true, true)
-				return err
+				return errAppend
+			}
+			if txMgr != nil {
+				txMgr.SetLastLSN(writerTxID, lsn)
 			}
 			leaf.SetLSN(lsn)
 		}
@@ -503,9 +612,9 @@ func (tree *BTree) splitLeafCells(leaf *Page, path []uint32, cells [][]byte) err
 
 	// Log AFTER state of split pages
 	if tree.wal != nil {
-		lsn1, _ := tree.wal.Append(0, leaf.GetPageID(), LogOpFullPage, nil, leaf.GetData())
+		lsn1, _ := tree.wal.Append(0, leaf.GetPageID(), 0, LogOpFullPage, nil, leaf.GetData())
 		leaf.SetLSN(lsn1)
-		lsn2, _ := tree.wal.Append(0, newLeaf.GetPageID(), LogOpFullPage, nil, newLeaf.GetData())
+		lsn2, _ := tree.wal.Append(0, newLeaf.GetPageID(), 0, LogOpFullPage, nil, newLeaf.GetData())
 		newLeaf.SetLSN(lsn2)
 	}
 
@@ -532,7 +641,7 @@ func (tree *BTree) insertIntoParent(leftChildID uint32, routingCell []byte, path
 		tree.rootPageID = newRootID
 
 		if tree.wal != nil {
-			lsn, _ := tree.wal.Append(0, newRootID, LogOpFullPage, nil, newRoot.GetData())
+			lsn, _ := tree.wal.Append(0, newRootID, 0, LogOpFullPage, nil, newRoot.GetData())
 			newRoot.SetLSN(lsn)
 		}
 
@@ -540,9 +649,9 @@ func (tree *BTree) insertIntoParent(leftChildID uint32, routingCell []byte, path
 		metaPage, _ := tree.bm.FetchPageForWrite(MetaPageID, PageTypeMeta)
 		if metaPage != nil {
 			metaPage.SetRootPageID(newRootID)
-			
+
 			if tree.wal != nil {
-				lsn, _ := tree.wal.Append(0, MetaPageID, LogOpFullPage, nil, metaPage.GetData())
+				lsn, _ := tree.wal.Append(0, MetaPageID, 0, LogOpFullPage, nil, metaPage.GetData())
 				metaPage.SetLSN(lsn)
 			}
 			tree.bm.UnpinPage(MetaPageID, true, true)
@@ -592,7 +701,7 @@ func (tree *BTree) insertIntoParent(leftChildID uint32, routingCell []byte, path
 		}
 
 		if tree.wal != nil {
-			lsn, _ := tree.wal.Append(0, parentID, LogOpFullPage, nil, parent.GetData())
+			lsn, _ := tree.wal.Append(0, parentID, 0, LogOpFullPage, nil, parent.GetData())
 			parent.SetLSN(lsn)
 		}
 
@@ -661,9 +770,9 @@ func (tree *BTree) splitInternal(internalNode *Page, path []uint32, newCell []by
 	routingCell := NewKeyCell(newInternalID, routingKey).Serialize()
 
 	if tree.wal != nil {
-		lsn1, _ := tree.wal.Append(0, internalNode.GetPageID(), LogOpFullPage, nil, internalNode.GetData())
+		lsn1, _ := tree.wal.Append(0, internalNode.GetPageID(), 0, LogOpFullPage, nil, internalNode.GetData())
 		internalNode.SetLSN(lsn1)
-		lsn2, _ := tree.wal.Append(0, newInternalID, LogOpFullPage, nil, newInternal.GetData())
+		lsn2, _ := tree.wal.Append(0, newInternalID, 0, LogOpFullPage, nil, newInternal.GetData())
 		newInternal.SetLSN(lsn2)
 	}
 

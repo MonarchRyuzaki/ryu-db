@@ -3,113 +3,52 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"strings"
-	"time"
-
-	"github.com/MonarchRyuzaki/db-internals/internal/engine"
-	"github.com/MonarchRyuzaki/db-internals/internal/storage"
 )
 
 func main() {
-	fmt.Println("Initializing Storage Engine...")
-
-	// Create or open the DB in the current directory
-	db, err := storage.NewBTree("repl_store", ".")
+	conn, err := net.Dial("tcp", "localhost:8080")
 	if err != nil {
-		fmt.Printf("Failed to initialize database: %v\n", err)
+		fmt.Printf("Failed to connect to server: %v\n", err)
 		os.Exit(1)
 	}
+	defer conn.Close()
 
-	// Start the background vacuum process to clean up tombstones every 10 seconds
-	// db.StartVacuumRoutine(10 * time.Second)
-	
-	// Start the background checkpoint process to limit recovery time (every 30 seconds for testing)
-	db.StartCheckpointRoutine(30 * time.Second)
+	// Read welcome message
+	serverScanner := bufio.NewScanner(conn)
+	if serverScanner.Scan() {
+		fmt.Println(serverScanner.Text())
+	}
 
-	// Wrap the BTree in our MVCC Engine
-	mvccDB := engine.NewDB(db)
-
-	// Ensure we flush everything when we exit!
-	defer db.Close()
-
-	fmt.Println("Database initialized successfully! (Running on custom B-Tree with Page-Level Latching)")
-	fmt.Println("Available commands:")
-	fmt.Println("  SET <key> <value>")
-	fmt.Println("  GET <key>")
-	fmt.Println("  DELETE <key>")
-	fmt.Println("  EXIT")
-	fmt.Println("-------------------------------------------------")
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print("db> ")
-		if !scanner.Scan() {
-			break
+	// Goroutine to print server responses
+	go func() {
+		for serverScanner.Scan() {
+			fmt.Println(serverScanner.Text())
+			fmt.Print("db> ")
 		}
+		if err := serverScanner.Err(); err != nil {
+			fmt.Printf("\nError reading from server: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}()
 
-		line := strings.TrimSpace(scanner.Text())
+	fmt.Print("db> ")
+	clientScanner := bufio.NewScanner(os.Stdin)
+	for clientScanner.Scan() {
+		line := strings.TrimSpace(clientScanner.Text())
 		if line == "" {
+			fmt.Print("db> ")
 			continue
 		}
 
-		// Split into at most 3 parts: COMMAND, KEY, VALUE
-		parts := strings.SplitN(line, " ", 3)
-		command := strings.ToUpper(parts[0])
-
-		switch command {
-		case "SET":
-			if len(parts) < 3 {
-				fmt.Println("Usage: SET <key> <value>")
-				continue
-			}
-			key := parts[1]
-			value := parts[2]
-
-			start := time.Now()
-			err := mvccDB.Set(key, value)
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-			} else {
-				fmt.Printf("OK (took %v)\n", time.Since(start))
-			}
-
-		case "GET":
-			if len(parts) < 2 {
-				fmt.Println("Usage: GET <key>")
-				continue
-			}
-			key := parts[1]
-
-			start := time.Now()
-			val, err := mvccDB.Get(key)
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-			} else {
-				fmt.Printf("\"%s\" (took %v)\n", val, time.Since(start))
-			}
-
-		case "DELETE":
-			if len(parts) < 2 {
-				fmt.Println("Usage: DELETE <key>")
-				continue
-			}
-			key := parts[1]
-
-			start := time.Now()
-			err := mvccDB.Delete(key)
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-			} else {
-				fmt.Printf("OK (took %v)\n", time.Since(start))
-			}
-
-		case "EXIT":
-			fmt.Println("Shutting down database...")
+		if strings.ToUpper(line) == "EXIT" {
+			fmt.Fprintln(conn, "EXIT")
 			return
-
-		default:
-			fmt.Printf("Unknown command: %s\n", command)
 		}
+
+		fmt.Fprintln(conn, line)
 	}
 }

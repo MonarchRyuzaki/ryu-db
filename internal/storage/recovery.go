@@ -38,6 +38,7 @@ func (tree *BTree) Recover() error {
 
 	// Analysis Phase
 	dpt := make(map[uint32]uint64) // Dirty Page Table
+	att := make(map[uint64]uint64) // Active Transaction Table: TxnID -> LastLSN
 	lsn := checkpointLSN
 	if lsn == 0 {
 		// Only skip 4 bytes if the file actually has the magic header
@@ -64,10 +65,19 @@ func (tree *BTree) Recover() error {
 				dpt[pageID] = recLSN
 				valOffset += 12
 			}
-		} else if rec.OpType == LogOpFullPage || rec.OpType == LogOpInsert || rec.OpType == LogOpDelete {
+		} else if rec.OpType == LogOpFullPage || rec.OpType == LogOpInsert || rec.OpType == LogOpDelete || rec.OpType == LogOpCLR {
 			// If a page was dirtied after the checkpoint, add it to DPT
 			if _, exists := dpt[rec.PageID]; !exists {
 				dpt[rec.PageID] = rec.LSN
+			}
+		}
+
+		// Update ATT
+		if rec.TxnID != 0 {
+			if rec.OpType == LogOpCommit || rec.OpType == LogOpAbort {
+				delete(att, rec.TxnID)
+			} else {
+				att[rec.TxnID] = rec.LSN
 			}
 		}
 
@@ -148,13 +158,57 @@ func (tree *BTree) Recover() error {
 	fmt.Printf("[Recovery] Redo Phase Complete. Redid %d operations.\n", redoCount)
 
 	// 4. Undo Phase
-	// TODO(Phase 2 - Transactions & MVCC): Implement the Undo Phase!
-	// Once we introduce multi-statement transactions, we will have an Active Transaction Table.
-	// Any transaction that did not log a COMMIT record must be undone.
-	// We will scan backward through the WAL using PrevLSN pointers, and issue 
-	// Compensation Log Records (CLRs) to rollback their operations (e.g., deleting uncommitted MVCC versions).
-	fmt.Println("[Recovery] Undo Phase skipped (Active Transaction Table empty due to auto-commit).")
+	fmt.Printf("[Recovery] Undo Phase... %d active transactions\n", len(att))
+	undoCount := 0
 	
+	// We need to re-enable the WAL temporarily for Undo to write CLR and Abort records!
+	tree.wal = wal
+	tree.bm.wal = wal
+	
+	for len(att) > 0 {
+		var maxLSN uint64 = 0
+		var maxTxn uint64 = 0
+		for txn, lsn := range att {
+			if lsn > maxLSN {
+				maxLSN = lsn
+				maxTxn = txn
+			}
+		}
+		
+		if maxLSN == 0 {
+			break
+		}
+		
+		rec, _, err := wal.ReadRecord(maxLSN)
+		if err != nil {
+			break
+		}
+		
+		if rec.OpType == LogOpInsert || rec.OpType == LogOpDelete {
+			page, err := tree.bm.FetchPageForWrite(rec.PageID, PageTypeLeaf)
+			if err == nil {
+				inverseOp := LogOpDelete
+				if rec.OpType == LogOpDelete {
+					inverseOp = LogOpInsert
+				}
+				tree.redoUpsertOnPage(page, rec.Key, rec.Value, inverseOp)
+				
+				clrLSN, _ := tree.wal.Append(maxTxn, rec.PageID, rec.PrevLSN, LogOpCLR, rec.Key, rec.Value)
+				page.SetLSN(clrLSN)
+				tree.bm.UnpinPage(rec.PageID, true, true)
+				undoCount++
+			}
+		}
+		
+		if rec.PrevLSN == 0 {
+			tree.wal.Append(maxTxn, 0, 0, LogOpAbort, nil, nil)
+			delete(att, maxTxn)
+		} else {
+			att[maxTxn] = rec.PrevLSN
+		}
+	}
+
+	fmt.Printf("[Recovery] Undo Phase Complete. Undid %d operations.\n", undoCount)
 	return nil
 }
 
