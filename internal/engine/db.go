@@ -61,3 +61,8 @@ func (db *DB) Delete(txID storage.TxnID, key string) error {
 func (db *DB) Rollback(txID storage.TxnID) error {
 	return db.index.Rollback(txID, db.txMgr)
 }
+
+// Commit finalizes a transaction.
+func (db *DB) Commit(txID storage.TxnID) error {
+	return db.index.Commit(txID, db.txMgr)
+}

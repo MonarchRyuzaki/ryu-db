@@ -31,6 +31,7 @@ type Index interface {
 	FindLatest(mvccUserKey []byte, txMgr *TransactionManager) ([]byte, error)
 	Delete(key []byte, txMgr *TransactionManager) error
 	Rollback(txid TxnID, txMgr *TransactionManager) error
+	Commit(txid TxnID, txMgr *TransactionManager) error
 }
 
 // BTree implements the Index interface using a B+ Tree over the BufferManager.
@@ -426,7 +427,25 @@ func (tree *BTree) Rollback(txid TxnID, txMgr *TransactionManager) error {
 		lsn = rec.PrevLSN
 	}
 
+	if tree.wal != nil {
+		tree.wal.Append(uint64(txid), 0, 0, LogOpAbort, nil, nil)
+	}
+
 	txMgr.SetStatus(txid, TXN_ROLLEDBACK)
+	return nil
+}
+
+// Commit finalizes a transaction by appending a LogOpCommit record to the WAL.
+func (tree *BTree) Commit(txid TxnID, txMgr *TransactionManager) error {
+	if tree.wal != nil {
+		prevLSN := txMgr.GetLastLSN(txid)
+		lsn, err := tree.wal.Append(uint64(txid), 0, prevLSN, LogOpCommit, nil, nil)
+		if err != nil {
+			return err
+		}
+		txMgr.SetLastLSN(txid, lsn)
+	}
+	txMgr.SetStatus(txid, TXN_COMMITED)
 	return nil
 }
 

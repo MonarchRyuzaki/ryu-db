@@ -58,7 +58,7 @@ func handleConnection(conn net.Conn, mvccDB *engine.DB, txMgr *storage.Transacti
 			if !client.InTx {
 				fmt.Fprintln(conn, "ERR COMMIT without BEGIN")
 			} else {
-				txMgr.Commit(client.TxID)
+				mvccDB.Commit(client.TxID)
 				client.InTx = false
 				fmt.Fprintln(conn, "OK")
 			}
