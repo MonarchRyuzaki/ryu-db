@@ -1,8 +1,8 @@
-# RyuDB: High-Performance B-Tree Storage Engine
+# RyuDB: An ACID-Compliant, MVCC Transactional Database Built From Scratch
 
-> **Note:** This is an educational project built from scratch while studying the concepts in the book *Database Internals* by Alex Petrov. The goal was to understand how the lowest physical layers of a database actually work under the hood. While it achieves surprisingly high performance, it is intended as a learning exercise rather than an industry-standard, production-ready system.
+> **Note:** This is an educational project built from scratch while studying the concepts in the book *Database Internals* by Alex Petrov. What started as a simple physical storage exercise evolved into a complete, highly-concurrent, fault-tolerant database architecture mirroring the internals of PostgreSQL and MySQL.
 
-A lightning-fast, disk-backed Key-Value storage engine built entirely from scratch in Go. This project implements the physical storage layer found at the bottom of modern databases (like PostgreSQL, MySQL, and SQLite), focusing heavily on concurrency, memory management, and disk I/O optimization.
+A lightning-fast, strictly serializable, disk-backed transactional database built entirely from scratch in Go. RyuDB implements the brutal, lowest-level physical complexities of modern database engines, focusing on Zero-Copy memory management, lock-free Multi-Version Concurrency Control (MVCC), and absolute data durability via the ARIES Recovery Protocol.
 
 ## 🚀 Features
 
