@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MonarchRyuzaki/db-internals/internal/storage"
+	"github.com/MonarchRyuzaki/ryu-db/internal/storage"
 )
 
 func TestMVCC_BasicTimeTravel(t *testing.T) {

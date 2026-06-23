@@ -1,4 +1,4 @@
-# DB-Internals: High-Performance B-Tree Storage Engine
+# RyuDB: High-Performance B-Tree Storage Engine
 
 > **Note:** This is an educational project built from scratch while studying the concepts in the book *Database Internals* by Alex Petrov. The goal was to understand how the lowest physical layers of a database actually work under the hood. While it achieves surprisingly high performance, it is intended as a learning exercise rather than an industry-standard, production-ready system.
 

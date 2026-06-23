@@ -3,7 +3,7 @@ package engine
 import (
 	"strings"
 
-	"github.com/MonarchRyuzaki/db-internals/internal/storage"
+	"github.com/MonarchRyuzaki/ryu-db/internal/storage"
 )
 
 // DB is the MVCC Coordinator that wraps the generic B-Tree storage engine.

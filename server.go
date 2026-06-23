@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MonarchRyuzaki/db-internals/internal/engine"
-	"github.com/MonarchRyuzaki/db-internals/internal/storage"
+	"github.com/MonarchRyuzaki/ryu-db/internal/engine"
+	"github.com/MonarchRyuzaki/ryu-db/internal/storage"
 )
 
 // ClientState represents the state of a connected client.
