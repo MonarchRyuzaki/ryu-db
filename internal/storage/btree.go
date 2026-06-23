@@ -26,10 +26,10 @@ import (
 
 // Index is the interface that any tree or hash index must implement.
 type Index interface {
-	Insert(key []byte, value []byte) error
+	Insert(key []byte, value []byte, txMgr *TransactionManager) error
 	Find(key []byte) ([]byte, error)
 	FindLatest(mvccUserKey []byte, txMgr *TransactionManager) ([]byte, error)
-	Delete(key []byte) error
+	Delete(key []byte, txMgr *TransactionManager) error
 }
 
 // BTree implements the Index interface using a B+ Tree over the BufferManager.
@@ -384,18 +384,18 @@ func (tree *BTree) Find(key []byte) ([]byte, error) {
 }
 
 // Insert adds a new key-value pair to the B+ tree. If the key already exists, it updates it (Upsert).
-func (tree *BTree) Insert(key []byte, value []byte) error {
-	return tree.upsertCell(key, value, 0)
+func (tree *BTree) Insert(key []byte, value []byte, txMgr *TransactionManager) error {
+	return tree.upsertCell(key, value, 0, txMgr)
 }
 
 // Delete removes a key from the B+ tree using a Tombstone approach.
-func (tree *BTree) Delete(key []byte) error {
+func (tree *BTree) Delete(key []byte, txMgr *TransactionManager) error {
 	// KEY_DELETED_FLAG indicates a Tombstone (deleted) cell
-	return tree.upsertCell(key, nil, KEY_DELETED_FLAG)
+	return tree.upsertCell(key, nil, KEY_DELETED_FLAG, txMgr)
 }
 
 // upsertCell handles the actual insertion, updating, or tombstoning of a cell.
-func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8) error {
+func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8, txMgr *TransactionManager) error {
 	leaf, path, err := tree.findLeafPage(key, true)
 	if err != nil {
 		return err
@@ -422,10 +422,31 @@ func (tree *BTree) upsertCell(key []byte, value []byte, flag uint8) error {
 	// We start the space calculation with the header size
 	totalSpaceNeeded := HeaderSize
 
+	writerUserKey, writerTxID := ExtractMVCCKey(key)
+
 	// Extract all cells. If we find the key, we swap its byte data with the new cell.
 	for i := uint16(0); i < slotCount; i++ {
 		c, _ := leaf.Get(i)
 		kv := DeserializeKVCell(c)
+
+		kvUserKey, kvTxID := ExtractMVCCKey(kv.Key)
+
+		// MVCC Write-Write Conflict Detection (First-Updater-Wins)
+		if bytes.Equal(kvUserKey, writerUserKey) && txMgr != nil && kvTxID != writerTxID {
+			status := txMgr.GetStatus(kvTxID)
+			
+			// If another transaction is currently modifying this key, we abort (WW Conflict)
+			if status == TXN_RUNNING {
+				tree.bm.UnpinPage(leaf.GetPageID(), false, true)
+				return fmt.Errorf("write-write conflict: key %s is currently locked by active transaction %d", string(writerUserKey), kvTxID)
+			}
+			
+			// If a future transaction already committed a write to this key, we abort (WW Conflict)
+			if status == TXN_COMMITED && kvTxID > writerTxID {
+				tree.bm.UnpinPage(leaf.GetPageID(), false, true)
+				return fmt.Errorf("write-write conflict: key %s was modified by a newer committed transaction %d", string(writerUserKey), kvTxID)
+			}
+		}
 
 		var cellToKeep []byte
 		if bytes.Equal(kv.Key, key) {

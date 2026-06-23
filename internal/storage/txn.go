@@ -75,7 +75,10 @@ func BuildMVCCKey(key []byte, txID uint64) []byte {
 
 // ExtractMVCCKey extracts the original UserKey and TxID from a concatenated MVCC key.
 func ExtractMVCCKey(mvccKey []byte) (userKey []byte, txID TxnID) {
-	if len(mvccKey) <= 9 {
+	if len(mvccKey) < 9 {
+		return mvccKey, 0
+	}
+	if mvccKey[len(mvccKey)-9] != 0x00 {
 		return mvccKey, 0
 	}
 	userKey = mvccKey[:len(mvccKey)-9]

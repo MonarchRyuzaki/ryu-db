@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// TestRecovery_CrashAndRestart simulates a database crash by writing records, 
-// forcibly abandoning the BTree without flushing buffers, and then restarting 
+// TestRecovery_CrashAndRestart simulates a database crash by writing records,
+// forcibly abandoning the BTree without flushing buffers, and then restarting
 // a new BTree instance to verify that the ARIES recovery phase restores the data.
 func TestRecovery_CrashAndRestart(t *testing.T) {
 	dir := t.TempDir()
@@ -18,6 +18,8 @@ func TestRecovery_CrashAndRestart(t *testing.T) {
 		t.Fatalf("Failed to create BTree: %v", err)
 	}
 
+	txMgr := NewTransactionManager()
+
 	records := map[string]string{
 		"alice":   "alice@example.com",
 		"bob":     "bob@example.com",
@@ -25,7 +27,7 @@ func TestRecovery_CrashAndRestart(t *testing.T) {
 	}
 
 	for k, v := range records {
-		err := tree1.Insert([]byte(k), []byte(v))
+		err := tree1.Insert([]byte(k), []byte(v), txMgr)
 		if err != nil {
 			t.Fatalf("Failed to insert %s: %v", k, err)
 		}
@@ -54,7 +56,7 @@ func TestRecovery_CrashAndRestart(t *testing.T) {
 		"eve":  "eve@example.com",
 	}
 	for k, v := range moreRecords {
-		err := tree1.Insert([]byte(k), []byte(v))
+		err := tree1.Insert([]byte(k), []byte(v), txMgr)
 		if err != nil {
 			t.Fatalf("Failed to insert %s: %v", k, err)
 		}
@@ -96,7 +98,7 @@ func TestRecovery_CrashAndRestart(t *testing.T) {
 	}
 
 	// 4. Verify we can still insert after recovery
-	err = tree2.Insert([]byte("frank"), []byte("frank@example.com"))
+	err = tree2.Insert([]byte("frank"), []byte("frank@example.com"), txMgr)
 	if err != nil {
 		t.Fatalf("Failed to insert after recovery: %v", err)
 	}
@@ -116,11 +118,13 @@ func TestRecovery_SplitRecovery(t *testing.T) {
 		t.Fatalf("Failed to create BTree: %v", err)
 	}
 
+	txMgr := NewTransactionManager()
+
 	// Insert enough records to trigger a root split
 	for i := 0; i < 500; i++ {
 		k := fmt.Sprintf("key%04d", i)
 		v := fmt.Sprintf("val%04d", i)
-		err := tree1.Insert([]byte(k), []byte(v))
+		err := tree1.Insert([]byte(k), []byte(v), txMgr)
 		if err != nil {
 			t.Fatalf("Failed to insert %s: %v", k, err)
 		}

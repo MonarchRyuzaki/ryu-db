@@ -21,7 +21,7 @@ func NewDB(index storage.Index, txMgr *storage.TransactionManager) *DB {
 // Set inserts or updates a key with a new MVCC version.
 func (db *DB) Set(txID storage.TxnID, key string, value string) error {
 	mvccKey := storage.BuildMVCCKey([]byte(key), uint64(txID))
-	return db.index.Insert(mvccKey, []byte(value))
+	return db.index.Insert(mvccKey, []byte(value), db.txMgr)
 }
 
 // Get retrieves the latest committed version of the key.
@@ -38,5 +38,5 @@ func (db *DB) Get(txID storage.TxnID, key string) (string, error) {
 // Delete marks the key as deleted by inserting a Tombstone version.
 func (db *DB) Delete(txID storage.TxnID, key string) error {
 	mvccKey := storage.BuildMVCCKey([]byte(key), uint64(txID))
-	return db.index.Delete(mvccKey)
+	return db.index.Delete(mvccKey, db.txMgr)
 }

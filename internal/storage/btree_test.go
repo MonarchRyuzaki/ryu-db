@@ -17,6 +17,8 @@ func TestBTree_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create BTree: %v", err)
 	}
+	
+	txMgr := NewTransactionManager()
 
 	// 2. Insert some basic records
 	records := map[string]string{
@@ -26,7 +28,7 @@ func TestBTree_Basic(t *testing.T) {
 	}
 
 	for k, v := range records {
-		err := tree.Insert([]byte(k), []byte(v))
+		err := tree.Insert([]byte(k), []byte(v), txMgr)
 		if err != nil {
 			t.Fatalf("Failed to insert %s: %v", k, err)
 		}
@@ -61,6 +63,8 @@ func TestBTree_Stress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create BTree: %v", err)
 	}
+	
+	txMgr := NewTransactionManager()
 
 	const numRecords = 5000
 	insertedKeys := make([][]byte, 0, numRecords)
@@ -71,7 +75,7 @@ func TestBTree_Stress(t *testing.T) {
 		key := []byte(fmt.Sprintf("key_%04d_%d", i, rand.Intn(100000)))
 		val := []byte(fmt.Sprintf("val_%d", i))
 		
-		err := tree.Insert(key, val)
+		err := tree.Insert(key, val, txMgr)
 		if err != nil {
 			t.Fatalf("Failed to insert on iteration %d: %v", i, err)
 		}
@@ -102,14 +106,16 @@ func TestBTree_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create BTree: %v", err)
 	}
+	
+	txMgr := NewTransactionManager()
 
 	// 1. Insert records
-	tree.Insert([]byte("key1"), []byte("value1"))
-	tree.Insert([]byte("key2"), []byte("value2"))
-	tree.Insert([]byte("key3"), []byte("value3"))
+	tree.Insert([]byte("key1"), []byte("value1"), txMgr)
+	tree.Insert([]byte("key2"), []byte("value2"), txMgr)
+	tree.Insert([]byte("key3"), []byte("value3"), txMgr)
 
 	// 2. Delete key2
-	err = tree.Delete([]byte("key2"))
+	err = tree.Delete([]byte("key2"), txMgr)
 	if err != nil {
 		t.Fatalf("Failed to delete key2: %v", err)
 	}
@@ -132,7 +138,7 @@ func TestBTree_Delete(t *testing.T) {
 	}
 
 	// 5. Verify deleting a non-existent key fails gracefully
-	err = tree.Delete([]byte("key4"))
+	err = tree.Delete([]byte("key4"), txMgr)
 	// Deletion is a just a special insert
 	// if err == nil {
 	// 	t.Fatalf("Expected error when deleting non-existent key")
@@ -148,6 +154,8 @@ func TestBTree_Overflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create BTree: %v", err)
 	}
+	
+	txMgr := NewTransactionManager()
 
 	// Create a 50KB payload
 	largePayload := make([]byte, 50000)
@@ -156,7 +164,7 @@ func TestBTree_Overflow(t *testing.T) {
 	}
 
 	// 1. Insert the massive payload
-	err = tree.Insert([]byte("massive_key"), largePayload)
+	err = tree.Insert([]byte("massive_key"), largePayload, txMgr)
 	if err != nil {
 		t.Fatalf("Failed to insert large payload: %v", err)
 	}
@@ -176,7 +184,7 @@ func TestBTree_Overflow(t *testing.T) {
 	}
 
 	// 3. Test that updating the massive key with a tiny value works (and tombstones/upserts correctly)
-	err = tree.Insert([]byte("massive_key"), []byte("tiny_value"))
+	err = tree.Insert([]byte("massive_key"), []byte("tiny_value"), txMgr)
 	if err != nil {
 		t.Fatalf("Failed to upsert massive_key: %v", err)
 	}
@@ -200,6 +208,8 @@ func TestBTree_FreePageReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create BTree: %v", err)
 	}
+	
+	txMgr := NewTransactionManager()
 
 	// 1. Verify MetaPage initially has no free pages
 	metaPage, _ := tree.bm.FetchPageForRead(MetaPageID, PageTypeMeta)
@@ -210,10 +220,10 @@ func TestBTree_FreePageReuse(t *testing.T) {
 
 	// 2. Insert a 10KB payload (which requires ~3 overflow pages)
 	payload1 := make([]byte, 10000)
-	tree.Insert([]byte("key1"), payload1)
+	tree.Insert([]byte("key1"), payload1, txMgr)
 
 	// 3. Delete the payload (creates a tombstone)
-	tree.Delete([]byte("key1"))
+	tree.Delete([]byte("key1"), txMgr)
 
 	// 4. Run the Vacuum process to sweep the tombstone and free the 3 overflow pages
 	err = tree.Vacuum()
@@ -231,7 +241,7 @@ func TestBTree_FreePageReuse(t *testing.T) {
 
 	// 6. Insert another large payload (this should pop pages off the free list!)
 	payload2 := make([]byte, 10000)
-	tree.Insert([]byte("key2"), payload2)
+	tree.Insert([]byte("key2"), payload2, txMgr)
 
 	// 7. Verify the free list was consumed (it should be empty again, or at least smaller)
 	metaPage, _ = tree.bm.FetchPageForRead(MetaPageID, PageTypeMeta)
